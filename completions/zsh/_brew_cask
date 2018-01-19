@@ -12,17 +12,21 @@
 zstyle -T ':completion:*:*:*:brew-cask:*' tag-order && \
 	zstyle ':completion:*:*:*:brew-cask:*' tag-order 'commands'
 
+__brew_cask() {
+  [ -d "$(brew --repo caskroom/cask)" ] && brew cask $@
+}
+
 __brew_all_casks() {
   local -a list
   local expl
-  list=( $(brew cask search) )
+  list=( $(__brew_cask search) )
   _wanted list expl 'all casks' compadd -a list
 }
 
 __brew_installed_casks() {
   local -a list
   local expl
-  list=( $(brew cask list|sed 's/(!)//') )
+  list=( $(__brew_cask list|sed 's/(!)//') )
   _wanted list expl 'installed casks' compadd -a list
 }
 
@@ -40,10 +44,11 @@ __brew_cask_commands() {
     'info:displays information about the given Cask'
     'install:installs the given Cask'
     'list:with no args, lists installed Casks; given installed Casks, lists staged files'
+    'outdated:list the outdated installed Casks'
+    'reinstall:reinstalls the given Cask'
     'search:searches all known Casks'
     'style:checks Cask style using RuboCop'
     'uninstall:uninstalls the given Cask'
-    "update:a synonym for 'brew update'"
     'zap:zaps all files associated with the given Cask'
   )
   _describe -t commands "brew cask command" commands
@@ -169,6 +174,7 @@ _brew_cask()
     '--colorpickerdir=-:Target location for Color Pickers. The default value is ~/Library/ColorPickers.' \
     '--prefpanedir=-:Target location for Preference Panes. The default value is ~/Library/PreferencePanes.' \
     '--qlplugindir=-:Target location for QuickLook Plugins. The default value is ~/Library/QuickLook.' \
+    '--dictionarydir=-:Target location for Dictionaries. The default value is ~/Library/Dictionaries.' \
     '--fontdir=-:Target location for Fonts. The default value is ~/Library/Fonts.' \
     '--servicedir=-:Target location for Services. The default value is ~/Library/Services.' \
     '--input_methoddir=-:Target location for Input Methods. The default value is ~/Library/Input Methods.' \

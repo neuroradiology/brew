@@ -1,6 +1,6 @@
 #:  * `analytics` [`state`]:
 #:    Display anonymous user behaviour analytics state.
-#:    Read more at <https://git.io/brew-analytics>.
+#:    Read more at <https://docs.brew.sh/Analytics.html>.
 #:
 #:  * `analytics` (`on`|`off`):
 #:    Turn on/off Homebrew's analytics.
@@ -9,6 +9,8 @@
 #:    Regenerate UUID used in Homebrew's analytics.
 
 module Homebrew
+  module_function
+
   def analytics
     config_file = HOMEBREW_REPOSITORY/".git/config"
 

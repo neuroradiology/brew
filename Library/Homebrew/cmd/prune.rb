@@ -12,6 +12,8 @@ require "cmd/tap"
 require "cmd/unlinkapps"
 
 module Homebrew
+  module_function
+
   def prune
     ObserverPathnameExtension.reset_counts!
 
@@ -33,7 +35,7 @@ module Homebrew
               path.unlink
             end
           end
-        elsif path.directory?
+        elsif path.directory? && !Keg::PRUNEABLE_DIRECTORIES.include?(path)
           dirs << path
         end
       end
@@ -53,7 +55,7 @@ module Homebrew
       else
         n, d = ObserverPathnameExtension.counts
         print "Pruned #{n} symbolic links "
-        print "and #{d} directories " if d > 0
+        print "and #{d} directories " if d.positive?
         puts "from #{HOMEBREW_PREFIX}"
       end
     end

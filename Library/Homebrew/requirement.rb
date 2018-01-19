@@ -9,10 +9,9 @@ require "build_environment"
 class Requirement
   include Dependable
 
-  attr_reader :tags, :name, :cask, :download, :default_formula
+  attr_reader :tags, :name, :cask, :download
 
   def initialize(tags = [])
-    @default_formula = self.class.default_formula
     @cask ||= self.class.cask
     @download ||= self.class.download
     tags.each do |tag|
@@ -34,18 +33,16 @@ class Requirement
     _, _, class_name = self.class.to_s.rpartition "::"
     s = "#{class_name} unsatisfied!\n"
     if cask
-      s += <<-EOS.undent
-
-        You can install with Homebrew Cask:
-          brew cask install #{cask}
+      s += <<~EOS
+        You can install with Homebrew-Cask:
+         brew cask install #{cask}
       EOS
     end
 
     if download
-      s += <<-EOS.undent
-
+      s += <<~EOS
         You can download from:
-          #{download}
+         #{download}
       EOS
     end
     s
@@ -56,7 +53,8 @@ class Requirement
   def satisfied?
     result = self.class.satisfy.yielder { |p| instance_eval(&p) }
     @satisfied_result = result
-    !!result
+    return false unless result
+    true
   end
 
   # Overriding #fatal? is deprecated.
@@ -65,8 +63,13 @@ class Requirement
     self.class.fatal || false
   end
 
-  def default_formula?
-    self.class.default_formula || false
+  def satisfied_result_parent
+    return unless @satisfied_result.is_a?(Pathname)
+    parent = @satisfied_result.resolved_path.parent
+    if parent.to_s =~ %r{^#{Regexp.escape(HOMEBREW_CELLAR)}/([\w+-.@]+)/[^/]+/(s?bin)/?$}
+      parent = HOMEBREW_PREFIX/"opt/#{Regexp.last_match(1)}/#{Regexp.last_match(2)}"
+    end
+    parent
   end
 
   # Overriding #modify_build_environment is deprecated.
@@ -81,14 +84,11 @@ class Requirement
     #   satisfy { which("executable") }
     # work, even under superenv where "executable" wouldn't normally be on the
     # PATH.
-    # This is undocumented magic and it should be removed, but we need to add
-    # a way to declare path-based requirements that work with superenv first.
-    if Pathname === @satisfied_result
-      parent = @satisfied_result.parent
-      unless ENV["PATH"].split(File::PATH_SEPARATOR).include?(parent.to_s)
-        ENV.append_path("PATH", parent)
-      end
-    end
+    parent = satisfied_result_parent
+    return unless parent
+    return if ["#{HOMEBREW_PREFIX}/bin", "#{HOMEBREW_PREFIX}/bin"].include?(parent.to_s)
+    return if PATH.new(ENV["PATH"]).include?(parent.to_s)
+    ENV.prepend_path("PATH", parent)
   end
 
   def env
@@ -102,7 +102,7 @@ class Requirement
   def ==(other)
     instance_of?(other.class) && name == other.name && tags == other.tags
   end
-  alias_method :eql?, :==
+  alias eql? ==
 
   def hash
     name.hash ^ tags.hash
@@ -112,14 +112,8 @@ class Requirement
     "#<#{self.class.name}: #{name.inspect} #{tags.inspect}>"
   end
 
-  def to_dependency
-    f = self.class.default_formula
-    raise "No default formula defined for #{inspect}" if f.nil?
-    if HOMEBREW_TAP_FORMULA_REGEX === f
-      TapDependency.new(f, tags, method(:modify_build_environment), name)
-    else
-      Dependency.new(f, tags, method(:modify_build_environment), name)
-    end
+  def display_s
+    name
   end
 
   private
@@ -132,24 +126,27 @@ class Requirement
   end
 
   def which(cmd)
-    super(cmd, ORIGINAL_PATHS.join(File::PATH_SEPARATOR))
+    super(cmd, PATH.new(ORIGINAL_PATHS))
   end
 
   def which_all(cmd)
-    super(cmd, ORIGINAL_PATHS.join(File::PATH_SEPARATOR))
+    super(cmd, PATH.new(ORIGINAL_PATHS))
   end
 
   class << self
-    include BuildEnvironmentDSL
+    include BuildEnvironment::DSL
 
-    attr_reader :env_proc
-    attr_rw :fatal, :default_formula
-    attr_rw :cask, :download
-    # build is deprecated, use `depends_on <requirement> => :build` instead
-    attr_rw :build
+    attr_reader :env_proc, :build
+    attr_rw :fatal, :cask, :download
 
-    def satisfy(options = {}, &block)
-      @satisfied ||= Requirement::Satisfier.new(options, &block)
+    def default_formula(val = nil)
+      # odeprecated "Requirement.default_formula"
+    end
+
+    def satisfy(options = nil, &block)
+      return @satisfied if options.nil? && !block_given?
+      options = {} if options.nil?
+      @satisfied = Requirement::Satisfier.new(options, &block)
     end
 
     def env(*settings, &block)
@@ -199,11 +196,8 @@ class Requirement
 
       formulae.each do |f|
         f.requirements.each do |req|
-          if prune?(f, req, &block)
-            next
-          else
-            reqs << req
-          end
+          next if prune?(f, req, &block)
+          reqs << req
         end
       end
 

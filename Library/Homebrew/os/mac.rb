@@ -3,15 +3,14 @@ require "development_tools"
 require "os/mac/version"
 require "os/mac/xcode"
 require "os/mac/xquartz"
-require "os/mac/pathname"
 require "os/mac/sdk"
 require "os/mac/keg"
 
 module OS
   module Mac
-    extend self
+    module_function
 
-    ::MacOS = self # compatibility
+    ::MacOS = self # rubocop:disable Naming/ConstantName
 
     raise "Loaded OS::Mac on generic OS!" if ENV["HOMEBREW_TEST_GENERIC_OS"]
 
@@ -27,42 +26,44 @@ module OS
       @full_version ||= Version.new((ENV["HOMEBREW_MACOS_VERSION"] || ENV["HOMEBREW_OSX_VERSION"]).chomp)
     end
 
-    def prerelease?
-      # TODO: bump version when new OS is released
-      version >= "10.13"
+    def full_version=(version)
+      @full_version = Version.new(version.chomp)
+      @version = nil
+    end
+
+    def latest_sdk_version
+      # TODO: bump version when new Xcode macOS SDK is released
+      Version.new "10.13"
+    end
+
+    def latest_stable_version
+      # TODO: bump version when new macOS is released
+      Version.new "10.13"
     end
 
     def outdated_release?
-      # TODO: bump version when new OS is released
-      version < "10.10"
+      # TODO: bump version when new macOS is released
+      version < "10.11"
+    end
+
+    def prerelease?
+      version > latest_stable_version
     end
 
     def cat
       version.to_sym
     end
 
+    def languages
+      @languages ||= [
+        *ARGV.value("language")&.split(","),
+        *ENV["HOMEBREW_LANGUAGES"]&.split(","),
+        *Open3.capture2("defaults", "read", "-g", "AppleLanguages")[0].scan(/[^ \n"(),]+/),
+      ].uniq
+    end
+
     def language
-      @language ||= Utils.popen_read("defaults", "read", ".GlobalPreferences", "AppleLanguages").delete(" \n\"()").sub(/,.*/, "")
-    end
-
-    # Locates a (working) copy of install_name_tool, guaranteed to function
-    # whether the user has developer tools installed or not.
-    def install_name_tool
-      if (path = HOMEBREW_PREFIX/"opt/cctools/bin/install_name_tool").executable?
-        path
-      else
-        DevelopmentTools.locate("install_name_tool")
-      end
-    end
-
-    # Locates a (working) copy of otool, guaranteed to function whether the user
-    # has developer tools installed or not.
-    def otool
-      if (path = HOMEBREW_PREFIX/"opt/cctools/bin/otool").executable?
-        path
-      else
-        DevelopmentTools.locate("otool")
-      end
+      languages.first
     end
 
     def active_developer_dir
@@ -89,7 +90,7 @@ module OS
       @locator ||= SDKLocator.new
       begin
         sdk = if v.nil?
-          Xcode.version.to_i >= 7 ? @locator.latest_sdk : @locator.sdk_for(version)
+          (Xcode.version.to_i >= 7) ? @locator.latest_sdk : @locator.sdk_for(version)
         else
           @locator.sdk_for v
         end
@@ -103,7 +104,7 @@ module OS
     # Returns the path to an SDK or nil, following the rules set by #sdk.
     def sdk_path(v = nil)
       s = sdk(v)
-      s.path unless s.nil?
+      s&.path
     end
 
     # See these issues for some history:
@@ -128,8 +129,8 @@ module OS
         paths << path if path.exist?
       end
 
-      # Finally, some users make their MacPorts or Fink directorie
-      # read-only in order to try out Homebrew, but this doens't work as
+      # Finally, some users make their MacPorts or Fink directories
+      # read-only in order to try out Homebrew, but this doesn't work as
       # some build scripts error out when trying to read from these now
       # unreadable paths.
       %w[/sw /opt/local].map { |p| Pathname.new(p) }.each do |path|
@@ -156,13 +157,13 @@ module OS
     end
 
     STANDARD_COMPILERS = {
-      "2.0"   => { gcc_40_build: 4061 },
-      "2.5"   => { gcc_40_build: 5370 },
-      "3.1.4" => { gcc_40_build: 5493, gcc_42_build: 5577 },
-      "3.2.6" => { gcc_40_build: 5494, gcc_42_build: 5666, clang: "1.7", clang_build: 77 },
-      "4.0"   => { gcc_40_build: 5494, gcc_42_build: 5666, clang: "2.0", clang_build: 137 },
-      "4.0.1" => { gcc_40_build: 5494, gcc_42_build: 5666, clang: "2.0", clang_build: 137 },
-      "4.0.2" => { gcc_40_build: 5494, gcc_42_build: 5666, clang: "2.0", clang_build: 137 },
+      "2.0"   => { gcc_4_0_build: 4061 },
+      "2.5"   => { gcc_4_0_build: 5370 },
+      "3.1.4" => { gcc_4_0_build: 5493, gcc_4_2_build: 5577 },
+      "3.2.6" => { gcc_4_0_build: 5494, gcc_4_2_build: 5666, clang: "1.7", clang_build: 77 },
+      "4.0"   => { gcc_4_0_build: 5494, gcc_4_2_build: 5666, clang: "2.0", clang_build: 137 },
+      "4.0.1" => { gcc_4_0_build: 5494, gcc_4_2_build: 5666, clang: "2.0", clang_build: 137 },
+      "4.0.2" => { gcc_4_0_build: 5494, gcc_4_2_build: 5666, clang: "2.0", clang_build: 137 },
       "4.2"   => { clang: "3.0", clang_build: 211 },
       "4.3"   => { clang: "3.1", clang_build: 318 },
       "4.3.1" => { clang: "3.1", clang_build: 318 },
@@ -200,6 +201,16 @@ module OS
       "7.3"   => { clang: "7.3", clang_build: 703 },
       "7.3.1" => { clang: "7.3", clang_build: 703 },
       "8.0"   => { clang: "8.0", clang_build: 800 },
+      "8.1"   => { clang: "8.0", clang_build: 800 },
+      "8.2"   => { clang: "8.0", clang_build: 800 },
+      "8.2.1" => { clang: "8.0", clang_build: 800 },
+      "8.3"   => { clang: "8.1", clang_build: 802 },
+      "8.3.1" => { clang: "8.1", clang_build: 802 },
+      "8.3.2" => { clang: "8.1", clang_build: 802 },
+      "8.3.3" => { clang: "8.1", clang_build: 802 },
+      "9.0"   => { clang: "9.0", clang_build: 900 },
+      "9.0.1" => { clang: "9.0", clang_build: 900 },
+      "9.1"   => { clang: "9.0", clang_build: 900 },
     }.freeze
 
     def compilers_standard?
@@ -207,7 +218,7 @@ module OS
         send(:"#{method}_version") == build
       end
     rescue IndexError
-      onoe <<-EOS.undent
+      onoe <<~EOS
         Homebrew doesn't know what compiler versions ship with your version
         of Xcode (#{Xcode.version}). Please `brew update` and if that doesn't
         help, file an issue with the output of `brew --config`:
@@ -220,7 +231,9 @@ module OS
     end
 
     def app_with_bundle_id(*ids)
-      path = mdfind(*ids).first
+      path = mdfind(*ids)
+             .reject { |p| p.include?("/Backups.backupdb/") }
+             .first
       Pathname.new(path) unless path.nil? || path.empty?
     end
 

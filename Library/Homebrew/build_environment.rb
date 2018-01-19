@@ -22,16 +22,18 @@ class BuildEnvironment
   def userpaths?
     @settings.include? :userpaths
   end
-end
 
-module BuildEnvironmentDSL
-  def env(*settings)
-    @env ||= BuildEnvironment.new
-    @env.merge(settings)
+  module DSL
+    def env(*settings)
+      @env ||= BuildEnvironment.new
+      @env.merge(settings)
+    end
   end
 end
 
 module Homebrew
+  module_function
+
   def build_env_keys(env)
     %w[
       CC CXX LD OBJC OBJCXX
@@ -44,6 +46,7 @@ module Homebrew
       HOMEBREW_SDKROOT HOMEBREW_BUILD_FROM_SOURCE
       MAKE GIT CPP
       ACLOCAL_PATH PATH CPATH
+      LD_LIBRARY_PATH LD_RUN_PATH LD_PRELOAD LIBRARY_PATH
     ].select { |key| env.key?(key) }
   end
 

@@ -1,10 +1,15 @@
-# return the shell profile file based on users' preference shell
-def shell_profile
-  opoo "shell_profile has been deprecated in favor of Utils::Shell.profile"
-  case ENV["SHELL"]
-  when %r{/(ba)?sh} then "~/.bash_profile"
-  when %r{/zsh} then "~/.zshrc"
-  when %r{/ksh} then "~/.kshrc"
-  else "~/.bash_profile"
+module Tty
+  module_function
+
+  def white
+    odisabled "Tty.white", "Tty.reset.bold"
   end
+end
+
+def puts_columns(_)
+  odisabled "puts_columns", "puts Formatter.columns"
+end
+
+def plural(_, _)
+  odisabled "#plural", "Formatter.pluralize"
 end

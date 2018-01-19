@@ -3,9 +3,10 @@ module CompilerConstants
   GNU_GCC_VERSIONS = %w[4.3 4.4 4.5 4.6 4.7 4.8 4.9 5 6 7].freeze
   GNU_GCC_REGEXP = /^gcc-(4\.[3-9]|[5-7])$/
   COMPILER_SYMBOL_MAP = {
-    "gcc-4.0"  => :gcc_4_0,
-    "gcc-4.2"  => :gcc,
-    "clang"    => :clang,
+    "gcc-4.0"    => :gcc_4_0,
+    "gcc-4.2"    => :gcc_4_2,
+    "clang"      => :clang,
+    "llvm_clang" => :llvm_clang,
   }.freeze
 
   COMPILERS = COMPILER_SYMBOL_MAP.values +
@@ -14,11 +15,18 @@ end
 
 class CompilerFailure
   attr_reader :name
-  attr_rw :version
+
+  def version(val = nil)
+    if val
+      @version = Version.parse(val.to_s)
+    else
+      @version
+    end
+  end
 
   # Allows Apple compiler `fails_with` statements to keep using `build`
   # even though `build` and `version` are the same internally
-  alias_method :build, :version
+  alias build version
 
   # The cause is no longer used so we need not hold a reference to the string
   def cause(_); end
@@ -45,11 +53,11 @@ class CompilerFailure
 
   def initialize(name, version, &block)
     @name = name
-    @version = version
+    @version = Version.parse(version.to_s)
     instance_eval(&block) if block_given?
   end
 
-  def ===(compiler)
+  def fails_with?(compiler)
     name == compiler.name && version >= compiler.version
   end
 
@@ -60,12 +68,23 @@ class CompilerFailure
   COLLECTIONS = {
     cxx11: [
       create(:gcc_4_0),
-      create(:gcc),
+      create(:gcc_4_2),
       create(:clang) { build 425 },
       create(gcc: "4.3"),
       create(gcc: "4.4"),
       create(gcc: "4.5"),
       create(gcc: "4.6"),
+    ],
+    cxx14: [
+      create(:clang) { build 600 },
+      create(:gcc_4_0),
+      create(:gcc_4_2),
+      create(gcc: "4.3"),
+      create(gcc: "4.4"),
+      create(gcc: "4.5"),
+      create(gcc: "4.6"),
+      create(gcc: "4.7"),
+      create(gcc: "4.8"),
     ],
     openmp: [
       create(:clang),
@@ -79,9 +98,9 @@ class CompilerSelector
   Compiler = Struct.new(:name, :version)
 
   COMPILER_PRIORITY = {
-    clang: [:clang, :gcc, :gnu, :gcc_4_0],
-    gcc: [:gcc, :gnu, :clang, :gcc_4_0],
-    gcc_4_0: [:gcc_4_0, :gcc, :gnu, :clang],
+    clang: [:clang, :gcc_4_2, :gnu, :gcc_4_0, :llvm_clang],
+    gcc_4_2: [:gcc_4_2, :gnu, :clang, :gcc_4_0],
+    gcc_4_0: [:gcc_4_0, :gcc_4_2, :gnu, :clang],
   }.freeze
 
   def self.select_for(formula, compilers = self.compilers)
@@ -115,19 +134,19 @@ class CompilerSelector
         GNU_GCC_VERSIONS.reverse_each do |v|
           name = "gcc-#{v}"
           version = compiler_version(name)
-          yield Compiler.new(name, version) if version
+          yield Compiler.new(name, version) unless version.null?
         end
       when :llvm
-        # no-op. DSL supported, compiler is not.
+        next # no-op. DSL supported, compiler is not.
       else
         version = compiler_version(compiler)
-        yield Compiler.new(compiler, version) if version
+        yield Compiler.new(compiler, version) unless version.null?
       end
     end
   end
 
   def fails_with?(compiler)
-    failures.any? { |failure| failure === compiler }
+    failures.any? { |failure| failure.fails_with?(compiler) }
   end
 
   def compiler_version(name)

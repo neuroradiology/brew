@@ -1,4 +1,4 @@
-#:  * `outdated` [`--quiet`|`--verbose`|`--json=v1`] [`--fetch-HEAD`]:
+#:  * `outdated` [`--quiet`|`--verbose`|`--json=`<version>] [`--fetch-HEAD`]:
 #:    Show formulae that have an updated version available.
 #:
 #:    By default, version information is displayed in interactive shells, and
@@ -7,7 +7,7 @@
 #:    If `--quiet` is passed, list only the names of outdated brews (takes
 #:    precedence over `--verbose`).
 #:
-#:    If `--verbose` is passed, display detailed version information.
+#:    If `--verbose` (or `-v`) is passed, display detailed version information.
 #:
 #:    If `--json=`<version> is passed, the output will be in JSON format. The only
 #:    valid version is `v1`.
@@ -21,6 +21,8 @@ require "formula"
 require "keg"
 
 module Homebrew
+  module_function
+
   def outdated
     formulae = if ARGV.resolved_formulae.empty?
       Formula.installed
@@ -56,13 +58,15 @@ module Homebrew
         end
 
         outdated_versions = outdated_kegs
-                            .group_by { |keg| Formulary.from_keg(keg) }
-                            .sort_by { |formula, _kegs| formula.full_name }
-                            .map do |formula, kegs|
-          "#{formula.full_name} (#{kegs.map(&:version).join(", ")})"
+                            .group_by { |keg| Formulary.from_keg(keg).full_name }
+                            .sort_by { |full_name, _kegs| full_name }
+                            .map do |full_name, kegs|
+          "#{full_name} (#{kegs.map(&:version).join(", ")})"
         end.join(", ")
 
-        puts "#{outdated_versions} < #{current_version}"
+        pinned_version = " [pinned at #{f.pinned_version}]" if f.pinned?
+
+        puts "#{outdated_versions} < #{current_version}#{pinned_version}"
       else
         puts f.full_installed_specified_name
       end
@@ -84,9 +88,11 @@ module Homebrew
 
       json << { name: f.full_name,
                 installed_versions: outdated_versions.collect(&:to_s),
-                current_version: current_version }
+                current_version: current_version,
+                pinned: f.pinned?,
+                pinned_version: f.pinned_version }
     end
-    puts Utils::JSON.dump(json)
+    puts JSON.generate(json)
 
     outdated
   end

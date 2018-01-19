@@ -47,7 +47,6 @@ class BuildOptions
   def bottle?
     include? "build-bottle"
   end
-  alias_method :build_bottle?, :bottle?
 
   # True if a {Formula} is being built with {Formula.head} instead of {Formula.stable}.
   # <pre>args << "--some-new-stuff" if build.head?</pre>
@@ -84,13 +83,6 @@ class BuildOptions
     include?("c++11") && option_defined?("c++11")
   end
 
-  # True if a {Formula} is being built in 32-bit/x86 mode.
-  # This is needed for some use-cases though we prefer to build Universal
-  # when a 32-bit version is needed.
-  def build_32_bit?
-    include?("32-bit") && option_defined?("32-bit")
-  end
-
   # @private
   def used_options
     @options & @args
@@ -99,6 +91,22 @@ class BuildOptions
   # @private
   def unused_options
     @options - @args
+  end
+
+  # @private
+  def invalid_options
+    @args - @options - BuildOptions.formula_install_options
+  end
+
+  # @private
+  def invalid_option_names
+    invalid_options.map(&:flag).sort
+  end
+
+  def self.formula_install_options
+    @formula_install_options ||= ARGV.formula_install_option_names.map do |option_name|
+      Option.new option_name[2..-1]
+    end
   end
 
   private

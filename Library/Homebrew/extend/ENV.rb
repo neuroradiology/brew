@@ -26,6 +26,13 @@ module EnvActivation
   ensure
     replace(old_env)
   end
+
+  def clear_sensitive_environment!
+    ENV.each_key do |key|
+      next unless /(cookie|key|token|password)/i =~ key
+      ENV.delete key
+    end
+  end
 end
 
 ENV.extend(EnvActivation)

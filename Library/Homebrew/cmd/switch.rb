@@ -6,6 +6,8 @@ require "keg"
 require "cmd/link"
 
 module Homebrew
+  module_function
+
   def switch
     if ARGV.named.length != 2
       onoe "Usage: brew switch <name> <version>"
@@ -23,10 +25,10 @@ module Homebrew
     end
 
     # Does the target version exist?
-    unless (rack+version).directory?
+    unless (rack/version).directory?
       onoe "#{name} does not have a version \"#{version}\" in the Cellar."
 
-      versions = rack.subdirs.map { |d| Keg.new(d).version }
+      versions = rack.subdirs.map { |d| Keg.new(d).version }.sort
       puts "Versions available: #{versions.join(", ")}"
 
       exit 3
@@ -39,7 +41,7 @@ module Homebrew
       keg.unlink
     end
 
-    keg = Keg.new(rack+version)
+    keg = Keg.new(rack/version)
 
     # Link new version, if not keg-only
     if keg_only?(rack)

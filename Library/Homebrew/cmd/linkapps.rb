@@ -1,6 +1,11 @@
 #:  * `linkapps` [`--local`] [<formulae>]:
 #:    Find installed formulae that provide `.app`-style macOS apps and symlink them
-#:    into `/Applications`, allowing for easier access.
+#:    into `/Applications`, allowing for easier access (deprecated).
+#:
+#:    Unfortunately `brew linkapps` cannot behave nicely with e.g. Spotlight using
+#:    either aliases or symlinks and Homebrew formulae do not build "proper" `.app`
+#:    bundles that can be relocated. Instead, please consider using `brew cask` and
+#:    migrate formulae using `.app`s to casks.
 #:
 #:    If no <formulae> are provided, all of them will have their apps symlinked.
 #:
@@ -11,7 +16,18 @@ require "keg"
 require "formula"
 
 module Homebrew
+  module_function
+
   def linkapps
+    opoo <<~EOS
+      `brew linkapps` has been deprecated and will eventually be removed!
+
+      Unfortunately `brew linkapps` cannot behave nicely with e.g. Spotlight using
+      either aliases or symlinks and Homebrew formulae do not build "proper" `.app`
+      bundles that can be relocated. Instead, please consider using `brew cask` and
+      migrate formulae using `.app`s to casks.
+    EOS
+
     target_dir = linkapps_target(local: ARGV.include?("--local"))
 
     unless target_dir.directory?
@@ -51,11 +67,9 @@ module Homebrew
     if link_count.zero?
       puts "No apps linked to #{target_dir}" if ARGV.verbose?
     else
-      puts "Linked #{link_count} app#{plural(link_count)} to #{target_dir}"
+      puts "Linked #{Formatter.pluralize(link_count, "app")} to #{target_dir}"
     end
   end
-
-  private
 
   def linkapps_target(opts = {})
     local = opts.fetch(:local, false)

@@ -3,7 +3,7 @@ require "tmpdir"
 require "etc"
 
 # Homebrew extends Ruby's `FileUtils` to make our code more readable.
-# @see http://ruby-doc.org/stdlib-1.8.7/libdoc/fileutils/rdoc/FileUtils.html Ruby's FileUtils API
+# @see https://ruby-doc.org/stdlib-2.0.0/libdoc/fileutils/rdoc/FileUtils.html Ruby's FileUtils API
 module FileUtils
   # Create a temporary directory then yield. When the block returns,
   # recursively delete the temporary directory. Passing opts[:retain]
@@ -84,15 +84,14 @@ module FileUtils
   end
 
   # @private
-  alias_method :old_mkdir, :mkdir
+  alias old_mkdir mkdir
 
   # A version of mkdir that also changes to that folder in a block.
   def mkdir(name, &_block)
-    old_mkdir(name)
-    if block_given?
-      chdir name do
-        yield
-      end
+    mkdir_p(name)
+    return unless block_given?
+    chdir name do
+      yield
     end
   end
   module_function :mkdir
@@ -102,27 +101,30 @@ module FileUtils
     system Formulary.factory("scons").opt_bin/"scons", *args
   end
 
-  # Run the `rake` from the `ruby` Homebrew is using rather than whatever is in the `PATH`.
-  def rake(*args)
-    system RUBY_BIN/"rake", *args
-  end
-
   # Run `make` 3.81 or newer.
   # Uses the system make on Leopard and newer, and the
   # path to the actually-installed make on Tiger or older.
   def make(*args)
     if Utils.popen_read("/usr/bin/make", "--version").match(/Make (\d\.\d+)/)[1] > "3.80"
-      system "/usr/bin/make", *args
+      make_path = "/usr/bin/make"
     else
       make = Formula["make"].opt_bin/"make"
       make_path = make.exist? ? make.to_s : (Formula["make"].opt_bin/"gmake").to_s
+    end
+
+    if superenv?
+      make_name = File.basename(make_path)
+      with_env(HOMEBREW_MAKE: make_name) do
+        system "make", *args
+      end
+    else
       system make_path, *args
     end
   end
 
   if method_defined?(:ruby)
     # @private
-    alias_method :old_ruby, :ruby
+    alias old_ruby ruby
   end
 
   # Run the `ruby` Homebrew is using rather than whatever is in the `PATH`.

@@ -1,24 +1,13 @@
 module Hardware
   class CPU
     class << self
-      def universal_archs
-        [].extend ArchitectureListExtension
-      end
-
       def cpuinfo
         @cpuinfo ||= File.read("/proc/cpuinfo")
       end
 
-      def type
-        @type ||= if cpuinfo =~ /Intel|AMD/
-          :intel
-        else
-          :dunno
-        end
-      end
-
       def family
         return :arm if arm?
+        return :ppc if ppc?
         return :dunno unless intel?
         # See https://software.intel.com/en-us/articles/intel-architecture-and-processor-identification-with-cpuid-model-and-family-numbers
         cpu_family = cpuinfo[/^cpu family\s*: ([0-9]+)/, 1].to_i
@@ -47,6 +36,10 @@ module Hardware
             :haswell
           when 0x3d, 0x47, 0x4f, 0x56
             :broadwell
+          when 0x5e
+            :skylake
+          when 0x8e
+            :kabylake
           else
             cpu_family_model
           end
@@ -64,12 +57,9 @@ module Hardware
         end
       end
 
-      def cores
-        cpuinfo.scan(/^processor/).size
-      end
-
       def flags
-        @flags ||= cpuinfo[/^flags.*/, 0].split
+        @flags ||= cpuinfo[/^(flags|Features).*/, 0]&.split
+        @flags ||= []
       end
 
       # Compatibility with Mac method, which returns lowercase symbols
@@ -78,13 +68,16 @@ module Hardware
         @features ||= flags[1..-1].map(&:intern)
       end
 
-      %w[aes altivec avx avx2 lm sse3 ssse3 sse4 sse4_2].each do |flag|
+      %w[aes altivec avx avx2 lm ssse3 sse4_2].each do |flag|
         define_method(flag + "?") { flags.include? flag }
       end
-      alias_method :is_64_bit?, :lm?
 
-      def bits
-        is_64_bit? ? 64 : 32
+      def sse3?
+        flags.include?("pni") || flags.include?("sse3")
+      end
+
+      def sse4?
+        flags.include? "sse4_1"
       end
     end
   end

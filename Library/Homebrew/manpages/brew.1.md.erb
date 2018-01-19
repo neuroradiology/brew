@@ -24,14 +24,14 @@ didn't include with macOS.
 
 ## ESSENTIAL COMMANDS
 
-For the full command list, see the [COMMANDS][] section.
+For the full command list, see the [COMMANDS](#commands) section.
 
 With `--verbose` or `-v`, many commands print extra debugging information. Note that these flags should only appear after a command.
 
   * `install` <formula>:
     Install <formula>.
 
-  * `remove` <formula>:
+  * `uninstall` <formula>:
     Uninstall <formula>.
 
   * `update`:
@@ -40,7 +40,7 @@ With `--verbose` or `-v`, many commands print extra debugging information. Note 
   * `list`:
     List all installed formulae.
 
-  * `search` <text>|`/`<text>`/`:
+  * `search` (<text>|`/`<text>`/`):
     Perform a substring search of formula names for <text>. If <text> is
     surrounded with slashes, then it is interpreted as a regular expression.
     The search for <text> is extended online to some popular taps.
@@ -54,7 +54,21 @@ With `--verbose` or `-v`, many commands print extra debugging information. Note 
 
 <%= developer_commands.join("\n") %>
 
-## EXTERNAL COMMANDS
+## OFFICIAL EXTERNAL COMMANDS
+
+  * `bundle`:
+    Bundler for non-Ruby dependencies from Homebrew:
+    <https://github.com/Homebrew/homebrew-bundle>
+
+  * `cask`:
+    Install macOS applications distributed as binaries:
+    <https://github.com/caskroom/homebrew-cask>
+
+  * `services`:
+    Integrates Homebrew formulae with macOS's `launchctl`(1) manager:
+    <https://github.com/Homebrew/homebrew-services>
+
+## CUSTOM EXTERNAL COMMANDS
 
 Homebrew, like `git`(1), supports external commands. These are executable
 scripts that reside somewhere in the `PATH`, named `brew-`<cmdname> or
@@ -62,7 +76,7 @@ scripts that reside somewhere in the `PATH`, named `brew-`<cmdname> or
 to create your own commands without modifying Homebrew's internals.
 
 Instructions for creating your own commands can be found in the docs:
-<https://github.com/Homebrew/brew/blob/master/docs/External-Commands.md>
+<https://docs.brew.sh/External-Commands.html>
 
 ## SPECIFYING FORMULAE
 
@@ -84,31 +98,6 @@ can take several different forms:
     The formula file will be cached for later use.
 
 ## ENVIRONMENT
-
-  * `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`:
-    When using the `S3` download strategy, Homebrew will look in
-    these variables for access credentials (see
-    <https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html#cli-environment>
-    to retrieve these access credentials from AWS).  If they are not set,
-    the `S3` download strategy will download with a public
-    (unsigned) URL.
-
-  * `BROWSER`:
-    If set, and `HOMEBREW_BROWSER` is not, use `BROWSER` as the web browser
-    when opening project homepages.
-
-  * `EDITOR`:
-    If set, and `HOMEBREW_EDITOR` and `VISUAL` are not, use `EDITOR` as the text editor.
-
-  * `GIT`:
-    When using Git, Homebrew will use `GIT` if set,
-    a Homebrew-built Git if installed, or the system-provided binary.
-
-    Set this to force Homebrew to use a particular git binary.
-
-  * `HOMEBREW_BOTTLE_DOMAIN`:
-    If set, instructs Homebrew to use the given URL as a download mirror for bottles.
-
   * `HOMEBREW_ARTIFACT_DOMAIN`:
     If set, instructs Homebrew to use the given URL as a download mirror for bottles and binaries.
 
@@ -116,6 +105,17 @@ can take several different forms:
     If set, Homebrew will only check for autoupdates once per this seconds interval.
 
     *Default:* `60`.
+
+  * `HOMEBREW_AWS_ACCESS_KEY_ID`, `HOMEBREW_AWS_SECRET_ACCESS_KEY`:
+    When using the `S3` download strategy, Homebrew will look in
+    these variables for access credentials (see
+    <https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-getting-started.html#cli-environment>
+    to retrieve these access credentials from AWS).  If they are not set,
+    the `S3` download strategy will download with a public
+    (unsigned) URL.
+
+  * `HOMEBREW_BOTTLE_DOMAIN`:
+    If set, instructs Homebrew to use the given URL as a download mirror for bottles.
 
   * `HOMEBREW_BROWSER`:
     If set, uses this setting as the browser when opening project homepages,
@@ -160,9 +160,19 @@ can take several different forms:
     directories. TextMate can handle this correctly in project mode, but many
     editors will do strange things in this case.
 
+  * `HOMEBREW_FORCE_BREWED_CURL`:
+    If set, Homebrew will use a Homebrew-installed `curl` rather than the
+    system version.
+
   * `HOMEBREW_FORCE_VENDOR_RUBY`:
-    If set, Homebrew will always use its vendored, relocatable Ruby 2.0 version
-    even if the system version of Ruby is >=2.0.
+    If set, Homebrew will always use its vendored, relocatable Ruby version
+    even if the system version of Ruby is new enough.
+
+  * `HOMEBREW_GIT`:
+    When using Git, Homebrew will use `GIT` if set,
+    a Homebrew-built Git if installed, or the system-provided binary.
+
+    Set this to force Homebrew to use a particular git binary.
 
   * `HOMEBREW_GITHUB_API_TOKEN`:
     A personal access token for the GitHub API, which you can create at
@@ -183,7 +193,7 @@ can take several different forms:
     *Default:* the number of available CPU cores.
 
   * `HOMEBREW_NO_ANALYTICS`:
-    If set, Homebrew will not send analytics. See: <https://github.com/Homebrew/brew/blob/master/docs/Analytics.md#analytics>
+    If set, Homebrew will not send analytics. See: <https://docs.brew.sh/Analytics.html>
 
   * `HOMEBREW_NO_AUTO_UPDATE`:
     If set, Homebrew will not auto-update before running `brew install`,
@@ -200,7 +210,7 @@ can take several different forms:
     to insecure HTTP.
 
     While ensuring your downloads are fully secure, this is likely
-    to cause from-source Sourceforge, some GNU & GNOME based
+    to cause from-source SourceForge, some GNU & GNOME based
     formulae to fail to download.
 
   * `HOMEBREW_NO_GITHUB_API`:
@@ -229,35 +239,48 @@ can take several different forms:
   * `HOMEBREW_VERBOSE`:
     If set, Homebrew always assumes `--verbose` when running commands.
 
-  * `VISUAL`:
-    If set, and `HOMEBREW_EDITOR` is not, use `VISUAL` as the text editor.
+  * `http_proxy`:
+    Sets the HTTP proxy to be used by `curl`, `git` and `svn` when downloading
+    through Homebrew.
+
+  * `https_proxy`:
+    Sets the HTTPS proxy to be used by `curl`, `git` and `svn` when downloading
+    through Homebrew.
+
+  * `ftp_proxy`:
+    Sets the FTP proxy to be used by `curl`, `git` and `svn` when downloading
+    through Homebrew.
+
+  * `no_proxy`:
+    Sets the comma-separated list of hostnames and domain names that should be excluded from proxying
+    by `curl`, `git` and `svn` when downloading through Homebrew.
 
 ## USING HOMEBREW BEHIND A PROXY
+Use the `http_proxy`, `https_proxy`, `no_proxy` and/or `ftp_proxy` documented above.
 
-Homebrew uses several commands for downloading files (e.g. `curl`, `git`, `svn`).
-Many of these tools can download via a proxy. It's common for these tools
-to read proxy parameters from environment variables.
+For example for an unauthenticated HTTP proxy:
 
-For the majority of cases setting `http_proxy` is enough. You can set this in
-your shell profile, or you can use it before a brew command:
+    export http_proxy=http://<host>:<port>
 
-    http_proxy=http://<host>:<port> brew install foo
+And for an authenticated HTTP proxy:
 
-If your proxy requires authentication:
-
-    http_proxy=http://<user>:<password>@<host>:<port> brew install foo
+    export http_proxy=http://<user>:<password>@<host>:<port>
 
 ## SEE ALSO
 
-Homebrew Documentation: <https://github.com/Homebrew/brew/blob/master/docs/>
+Homebrew Documentation: <https://docs.brew.sh>
 
-`git`(1), `git-log`(1)
+`brew-cask`(1), `git`(1), `git-log`(1)
 
 ## AUTHORS
 
 <%= lead_maintainer.concat("\n") %>
 
-<%= maintainers.concat("\n") %>
+<%= core_maintainer.concat("\n") %>
+
+<%= brew_maintainers.concat("\n") %>
+
+<%= core_maintainers.concat("\n") %>
 
 <%= former_maintainers.concat("\n") %>
 

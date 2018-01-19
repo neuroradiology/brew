@@ -22,6 +22,8 @@ require "metafiles"
 require "formula"
 
 module Homebrew
+  module_function
+
   def list
     # Use of exec means we don't explicitly exit
     list_unbrewed if ARGV.flag? "--unbrewed"
@@ -37,16 +39,9 @@ module Homebrew
       filtered_list
     elsif ARGV.named.empty?
       if ARGV.include? "--full-name"
-        full_names = Formula.installed.map(&:full_name).sort do |a, b|
-          if a.include?("/") && !b.include?("/")
-            1
-          elsif !a.include?("/") && b.include?("/")
-            -1
-          else
-            a <=> b
-          end
-        end
-        puts_columns full_names
+        full_names = Formula.installed.map(&:full_name).sort(&tap_and_name_comparison)
+        return if full_names.empty?
+        puts Formatter.columns(full_names)
       else
         ENV["CLICOLOR"] = nil
         exec "ls", *ARGV.options_only << HOMEBREW_CELLAR
@@ -57,8 +52,6 @@ module Homebrew
       ARGV.kegs.each { |keg| PrettyListing.new keg }
     end
   end
-
-  private
 
   UNBREWED_EXCLUDE_FILES = %w[.DS_Store].freeze
   UNBREWED_EXCLUDE_PATHS = %w[
@@ -76,6 +69,7 @@ module Homebrew
     lib/ruby/site_ruby/[12].*
     lib/ruby/vendor_ruby/[12].*
     manpages/brew.1
+    manpages/brew-cask.1
     share/pypy/*
     share/pypy3/*
     share/info/dir
@@ -93,7 +87,7 @@ module Homebrew
     dirs.delete "etc"
     dirs.delete "var"
 
-    args = dirs + %w[-type f (]
+    args = dirs.sort + %w[-type f (]
     args.concat UNBREWED_EXCLUDE_FILES.flat_map { |f| %W[! -name #{f}] }
     args.concat UNBREWED_EXCLUDE_PATHS.flat_map { |d| %W[! -path #{d}] }
     args.concat %w[)]
@@ -106,11 +100,15 @@ module Homebrew
     names = if ARGV.named.empty?
       Formula.racks
     else
-      ARGV.named.map { |n| HOMEBREW_CELLAR+n }.select(&:exist?)
+      racks = ARGV.named.map { |n| Formulary.to_rack(n) }
+      racks.select do |rack|
+        Homebrew.failed = true unless rack.exist?
+        rack.exist?
+      end
     end
     if ARGV.include? "--pinned"
       pinned_versions = {}
-      names.each do |d|
+      names.sort.each do |d|
         keg_pin = (HOMEBREW_PINNED_KEGS/d.basename.to_s)
         if keg_pin.exist? || keg_pin.symlink?
           pinned_versions[d] = keg_pin.readlink.basename.to_s
@@ -120,10 +118,10 @@ module Homebrew
         puts d.basename.to_s.concat(ARGV.include?("--versions") ? " #{version}" : "")
       end
     else # --versions without --pinned
-      names.each do |d|
+      names.sort.each do |d|
         versions = d.subdirs.map { |pn| pn.basename.to_s }
         next if ARGV.include?("--multiple") && versions.length < 2
-        puts "#{d.basename} #{versions*" "}"
+        puts "#{d.basename} #{versions * " "}"
       end
     end
   end
@@ -140,6 +138,8 @@ class PrettyListing
           # dylibs have multiple symlinks and we don't care about them
           (pnn.extname == ".dylib" || pnn.extname == ".pc") && !pnn.symlink?
         end
+      when ".brew"
+        next # Ignore .brew
       else
         if pn.directory?
           if pn.symlink?
@@ -180,12 +180,9 @@ class PrettyListing
   end
 
   def print_remaining_files(files, root, other = "")
-    case files.length
-    when 0
-      # noop
-    when 1
+    if files.length == 1
       puts files
-    else
+    elsif files.length > 1
       puts "#{root}/ (#{files.length} #{other}files)"
     end
   end

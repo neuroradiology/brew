@@ -26,11 +26,17 @@ module DiskUsageExtension
   private
 
   def compute_disk_usage
-    if directory?
+    path = if symlink?
+      resolved_path
+    else
+      self
+    end
+
+    if path.directory?
       scanned_files = Set.new
       @file_count = 0
       @disk_usage = 0
-      find do |f|
+      path.find do |f|
         if f.directory?
           @disk_usage += f.lstat.size
         else
@@ -47,13 +53,13 @@ module DiskUsageExtension
       end
     else
       @file_count = 1
-      @disk_usage = lstat.size
+      @disk_usage = path.lstat.size
     end
   end
 end
 
 # Homebrew extends Ruby's `Pathname` to make our code more readable.
-# @see http://ruby-doc.org/stdlib-1.8.7/libdoc/pathname/rdoc/Pathname.html  Ruby's Pathname API
+# @see https://ruby-doc.org/stdlib-1.8.7/libdoc/pathname/rdoc/Pathname.html  Ruby's Pathname API
 class Pathname
   include DiskUsageExtension
 
@@ -71,13 +77,13 @@ class Pathname
       when Array
         if src.empty?
           opoo "tried to install empty array to #{self}"
-          return
+          break
         end
         src.each { |s| install_p(s, File.basename(s)) }
       when Hash
         if src.empty?
           opoo "tried to install empty hash to #{self}"
-          return
+          break
         end
         src.each { |s, new_basename| install_p(s, new_basename) }
       else
@@ -132,7 +138,7 @@ class Pathname
 
   if method_defined?(:write)
     # @private
-    alias_method :old_write, :write
+    alias old_write write
   end
 
   # we assume this pathname object is a file obviously
@@ -148,13 +154,17 @@ class Pathname
     open("a", *open_args) { |f| f.puts(content) }
   end
 
-  def binwrite(contents, *open_args)
-    open("wb", *open_args) { |f| f.write(contents) }
-  end unless method_defined?(:binwrite)
+  unless method_defined?(:binwrite)
+    def binwrite(contents, *open_args)
+      open("wb", *open_args) { |f| f.write(contents) }
+    end
+  end
 
-  def binread(*open_args)
-    open("rb", *open_args, &:read)
-  end unless method_defined?(:binread)
+  unless method_defined?(:binread)
+    def binread(*open_args)
+      open("rb", *open_args, &:read)
+    end
+  end
 
   # NOTE always overwrites
   def atomic_write(content)
@@ -176,9 +186,12 @@ class Pathname
       begin
         tf.chown(uid, gid)
         tf.chmod(old_stat.mode)
-      rescue Errno::EPERM
+      rescue Errno::EPERM # rubocop:disable Lint/HandleExceptions
       end
 
+      # Close the file before renaming to prevent the error: Device or resource busy
+      # Affects primarily NFS.
+      tf.close
       File.rename(tf.path, self)
     ensure
       tf.close!
@@ -212,7 +225,7 @@ class Pathname
   end
 
   # @private
-  alias_method :extname_old, :extname
+  alias extname_old extname
 
   # extended to support common double extensions
   def extname(path = to_s)
@@ -236,7 +249,7 @@ class Pathname
     rmdir
     true
   rescue Errno::ENOTEMPTY
-    if (ds_store = self+".DS_Store").exist? && children.length == 1
+    if (ds_store = join(".DS_Store")).exist? && children.length == 1
       ds_store.unlink
       retry
     else
@@ -312,7 +325,7 @@ class Pathname
 
   def sha256
     require "digest/sha2"
-    incremental_hash(Digest::SHA2)
+    incremental_hash(Digest::SHA256)
   end
 
   def verify_checksum(expected)
@@ -321,11 +334,10 @@ class Pathname
     raise ChecksumMismatchError.new(self, expected, actual) unless expected == actual
   end
 
-  # FIXME: eliminate the places where we rely on this method
-  alias_method :to_str, :to_s unless method_defined?(:to_str)
+  alias to_str to_s unless method_defined?(:to_str)
 
   def cd
-    Dir.chdir(self) { yield }
+    Dir.chdir(self) { yield self }
   end
 
   def subdirs
@@ -334,7 +346,7 @@ class Pathname
 
   # @private
   def resolved_path
-    symlink? ? dirname+readlink : self
+    symlink? ? dirname.join(readlink) : self
   end
 
   # @private
@@ -344,7 +356,7 @@ class Pathname
     # The link target contains NUL bytes
     false
   else
-    (dirname+link).exist?
+    dirname.join(link).exist?
   end
 
   # @private
@@ -353,20 +365,21 @@ class Pathname
     File.symlink(src.relative_path_from(dirname), self)
   end
 
-  def /(other)
-    unless other.respond_to?(:to_str) || other.respond_to?(:to_path)
-      opoo "Pathname#/ called on #{inspect} with #{other.inspect} as an argument"
-      puts "This behavior is deprecated, please pass either a String or a Pathname"
+  unless method_defined?(:/)
+    def /(other)
+      if !other.respond_to?(:to_str) && !other.respond_to?(:to_path)
+        odeprecated "Pathname#/ with #{other.class}", "a String or a Pathname"
+      end
+      join(other.to_s)
     end
-    self + other.to_s
-  end unless method_defined?(:/)
+  end
 
   # @private
   def ensure_writable
     saved_perms = nil
     unless writable_real?
       saved_perms = stat.mode
-      chmod 0644
+      FileUtils.chmod "u+rw", to_path
     end
     yield
   ensure
@@ -393,7 +406,7 @@ class Pathname
     mkpath
     targets.each do |target|
       target = Pathname.new(target) # allow pathnames or strings
-      (self+target.basename).write <<-EOS.undent
+      join(target.basename).write <<~EOS
         #!/bin/bash
         exec "#{target}" "$@"
       EOS
@@ -405,9 +418,9 @@ class Pathname
     env_export = ""
     env.each { |key, value| env_export += "#{key}=\"#{value}\" " }
     dirname.mkpath
-    write <<-EOS.undent
-    #!/bin/bash
-    #{env_export}exec "#{target}" "$@"
+    write <<~EOS
+      #!/bin/bash
+      #{env_export}exec "#{target}" "$@"
     EOS
   end
 
@@ -417,7 +430,7 @@ class Pathname
     Pathname.glob("#{self}/*") do |file|
       next if file.directory?
       dst.install(file)
-      new_file = dst+file.basename
+      new_file = dst.join(file.basename)
       file.write_env_script(new_file, env)
     end
   end
@@ -425,7 +438,7 @@ class Pathname
   # Writes an exec script that invokes a java jar
   def write_jar_script(target_jar, script_name, java_opts = "")
     mkpath
-    (self+script_name).write <<-EOS.undent
+    join(script_name).write <<~EOS
       #!/bin/bash
       exec java #{java_opts} -jar #{target_jar} "$@"
     EOS
@@ -445,6 +458,10 @@ class Pathname
     end
   end
 
+  def ds_store?
+    basename.to_s == ".DS_Store"
+  end
+
   # https://bugs.ruby-lang.org/issues/9915
   if RUBY_VERSION == "2.0.0"
     prepend Module.new {
@@ -453,7 +470,13 @@ class Pathname
       end
     }
   end
+
+  def mach_o_bundle?
+    false
+  end
 end
+
+require "extend/os/pathname"
 
 # @private
 module ObserverPathnameExtension
@@ -476,7 +499,7 @@ module ObserverPathnameExtension
     MAXIMUM_VERBOSE_OUTPUT = 100
 
     def verbose?
-      return ARGV.verbose? unless ENV["TRAVIS"]
+      return ARGV.verbose? unless ENV["CI"]
       return false unless ARGV.verbose?
 
       if total < MAXIMUM_VERBOSE_OUTPUT

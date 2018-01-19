@@ -1,7 +1,6 @@
 require "download_strategy"
 require "checksum"
 require "version"
-require "forwardable"
 
 # Resource is the fundamental representation of an external resource. The
 # primary formula download, along with other declared resources, are instances
@@ -145,7 +144,10 @@ class Resource
   end
 
   def version(val = nil)
-    @version ||= detect_version(val)
+    @version ||= begin
+      version = detect_version(val)
+      version.null? ? nil : version
+    end
   end
 
   def mirror(val)
@@ -155,7 +157,7 @@ class Resource
   private
 
   def detect_version(val)
-    return if val.nil? && url.nil?
+    return Version::NULL if val.nil? && url.nil?
 
     case val
     when nil     then Version.detect(url, specs)

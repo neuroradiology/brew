@@ -2,6 +2,7 @@ require "dependable"
 
 # A dependency on another Homebrew formula.
 class Dependency
+  extend Forwardable
   include Dependable
 
   attr_reader :name, :tags, :env_proc, :option_names
@@ -22,7 +23,7 @@ class Dependency
   def ==(other)
     instance_of?(other.class) && name == other.name && tags == other.tags
   end
-  alias_method :eql?, :==
+  alias eql? ==
 
   def hash
     name.hash ^ tags.hash
@@ -34,21 +35,23 @@ class Dependency
     formula
   end
 
-  def installed?
-    to_formula.installed?
-  end
+  delegate installed?: :to_formula
 
   def satisfied?(inherited_options)
     installed? && missing_options(inherited_options).empty?
   end
 
   def missing_options(inherited_options)
-    required = options | inherited_options
-    required - Tab.for_formula(to_formula).used_options
+    formula = to_formula
+    required = options
+    required |= inherited_options
+    required &= formula.options.to_a
+    required -= Tab.for_formula(formula).used_options
+    required
   end
 
   def modify_build_environment
-    env_proc.call unless env_proc.nil?
+    env_proc&.call
   end
 
   def inspect
@@ -61,7 +64,7 @@ class Dependency
   end
 
   def self._load(marshaled)
-    new(*Marshal.load(marshaled))
+    new(*Marshal.load(marshaled)) # rubocop:disable Security/MarshalLoad
   end
 
   class << self
@@ -171,7 +174,7 @@ class TapDependency < Dependency
   attr_reader :tap
 
   def initialize(name, tags = [], env_proc = DEFAULT_ENV_PROC, option_names = [name.split("/").last])
-    @tap = name.rpartition("/").first
+    @tap = Tap.fetch(name.rpartition("/").first)
     super(name, tags, env_proc, option_names)
   end
 

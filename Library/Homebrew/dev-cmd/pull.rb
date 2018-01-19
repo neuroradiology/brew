@@ -1,52 +1,93 @@
-#: `pull` [`--bottle`] [`--bump`] [`--clean`] [`--ignore-whitespace`] [`--resolve`] [`--branch-okay`] [`--no-pbcopy`] [`--no-publish`] <patch-source> [<patch-source>]
+#:  * `pull` [`--bottle`] [`--bump`] [`--clean`] [`--ignore-whitespace`] [`--resolve`] [`--branch-okay`] [`--no-pbcopy`] [`--no-publish`] [`--warn-on-publish-failure`] [`--bintray-org=`<bintray-org>] [`--test-bot-user=`<test-bot-user>] <patch-source> [<patch-source>]:
 #:
 #:    Gets a patch from a GitHub commit or pull request and applies it to Homebrew.
 #:    Optionally, installs the formulae changed by the patch.
 #:
 #:    Each <patch-source> may be one of:
-#:      * The ID number of a PR (Pull Request) in the homebrew/core GitHub
+#:
+#:      ~ The ID number of a PR (pull request) in the homebrew/core GitHub
 #:        repository
-#:      * The URL of a PR on GitHub, using either the web page or API URL
+#:
+#:      ~ The URL of a PR on GitHub, using either the web page or API URL
 #:        formats. In this form, the PR may be on Homebrew/brew,
 #:        Homebrew/homebrew-core or any tap.
-#:      * The URL of a commit on GitHub
-#:      * A "http://bot.brew.sh/job/..." string specifying a testing job ID
 #:
-#:   If `--bottle` was passed, handle bottles, pulling the bottle-update
-#:   commit and publishing files on Bintray.
-#:   If `--bump` was passed, for one-formula PRs, automatically reword
-#:   commit message to our preferred format.
-#:   If `--clean` was passed, do not rewrite or otherwise modify the
-#:   commits found in the pulled PR.
-#:   If `--ignore-whitespace` was passed, silently ignore whitespace
-#:   discrepancies when applying diffs.
-#:   If `--resolve` was passed, when a patch fails to apply, leave in
-#:   progress and allow user to
-#:                  resolve, instead of aborting.
-#:   If `--branch-okay` was passed, do not warn if pulling to a branch
-#:   besides master (useful for testing).
-#:   If `--no-pbcopy` was passed, do not copy anything to the system
-#    clipboard.
-#:   If `--no-publish` was passed, do not publish bottles to Bintray.
+#:      ~ The URL of a commit on GitHub
+#:
+#:      ~ A "https://jenkins.brew.sh/job/..." string specifying a testing job ID
+#:
+#:    If `--bottle` is passed, handle bottles, pulling the bottle-update
+#:    commit and publishing files on Bintray.
+#:
+#:    If `--bump` is passed, for one-formula PRs, automatically reword
+#:    commit message to our preferred format.
+#:
+#:    If `--clean` is passed, do not rewrite or otherwise modify the
+#:    commits found in the pulled PR.
+#:
+#:    If `--ignore-whitespace` is passed, silently ignore whitespace
+#:    discrepancies when applying diffs.
+#:
+#:    If `--resolve` is passed, when a patch fails to apply, leave in
+#:    progress and allow user to resolve, instead of aborting.
+#:
+#:    If `--branch-okay` is passed, do not warn if pulling to a branch
+#:    besides master (useful for testing).
+#:
+#:    If `--no-pbcopy` is passed, do not copy anything to the system
+#:    clipboard.
+#:
+#:    If `--no-publish` is passed, do not publish bottles to Bintray.
+#:
+#:    If `--warn-on-publish-failure` was passed, do not exit if there's a
+#:    failure publishing bottles on Bintray.
+#:
+#:    If `--bintray-org=`<bintray-org> is passed, publish at the given Bintray
+#:    organisation.
+#:
+#:    If `--test-bot-user=`<test-bot-user> is passed, pull the bottle block
+#:    commit from the specified user on GitHub.
 
 require "net/http"
 require "net/https"
 require "utils"
-require "utils/json"
+require "json"
 require "formula"
 require "formulary"
 require "tap"
 require "version"
 require "pkg_version"
 
+module GitHub
+  module_function
+
+  # Return the corresponding test-bot user name for the given GitHub organization.
+  def test_bot_user(user)
+    test_bot = ARGV.value "test-bot-user"
+    return test_bot if test_bot
+    return "BrewTestBot" if user.casecmp("homebrew").zero?
+    "#{user.capitalize}TestBot"
+  end
+end
+
 module Homebrew
+  module_function
+
   def pull
-    if ARGV[0] == "--rebase"
-      odie "You meant `git pull --rebase`."
-    end
+    odie "You meant `git pull --rebase`." if ARGV[0] == "--rebase"
+
     if ARGV.named.empty?
       odie "This command requires at least one argument containing a URL or pull request number"
     end
+
+    # Passthrough Git environment variables for e.g. git am
+    if ENV["HOMEBREW_GIT_NAME"]
+      ENV["GIT_COMMITTER_NAME"] = ENV["HOMEBREW_GIT_NAME"]
+    end
+    if ENV["HOMEBREW_GIT_EMAIL"]
+      ENV["GIT_COMMITTER_EMAIL"] = ENV["HOMEBREW_GIT_EMAIL"]
+    end
+
     do_bump = ARGV.include?("--bump") && !ARGV.include?("--clean")
 
     # Formulae with affected bottles that were published
@@ -54,13 +95,10 @@ module Homebrew
     tap = nil
 
     ARGV.named.each do |arg|
-      if arg.to_i > 0
-        issue = arg
-        url = "https://github.com/Homebrew/homebrew-core/pull/#{arg}"
-        tap = CoreTap.instance
-      elsif (testing_match = arg.match %r{/job/Homebrew.*Testing/(\d+)/})
+      arg = "#{CoreTap.instance.default_remote}/pull/#{arg}" if arg.to_i.positive?
+      if (testing_match = arg.match %r{/job/Homebrew.*Testing/(\d+)/})
         tap = ARGV.value("tap")
-        tap = if tap && tap.start_with?("homebrew/")
+        tap = if tap&.start_with?("homebrew/")
           Tap.fetch("homebrew", tap.strip_prefix("homebrew/"))
         elsif tap
           odie "Tap option did not start with \"homebrew/\": #{tap}"
@@ -139,9 +177,16 @@ module Homebrew
 
         begin
           f = Formula[name]
-        # Make sure we catch syntax errors.
-        rescue Exception
+        rescue Exception # rubocop:disable Lint/RescueException
+          # Make sure we catch syntax errors.
           next
+        end
+
+        if f.stable
+          stable_urls = [f.stable.url] + f.stable.mirrors
+          stable_urls.grep(%r{^https://dl.bintray.com/homebrew/mirror/}) do |mirror_url|
+            check_bintray_mirror(f.full_name, mirror_url)
+          end
         end
 
         if ARGV.include? "--bottle"
@@ -203,10 +248,10 @@ module Homebrew
           url
         else
           bottle_branch = "pull-bottle-#{issue}"
-          "https://github.com/BrewTestBot/homebrew-#{tap.repo}/compare/homebrew:master...pr-#{issue}"
+          "https://github.com/#{GitHub.test_bot_user user}/homebrew-#{tap.repo}/compare/#{user}:master...pr-#{issue}"
         end
 
-        curl "--silent", "--fail", "-o", "/dev/null", "-I", bottle_commit_url
+        curl "--silent", "--fail", "--output", "/dev/null", "--head", bottle_commit_url
 
         safe_system "git", "checkout", "--quiet", "-B", bottle_branch, orig_revision
         pull_patch bottle_commit_url, "bottle commit"
@@ -235,25 +280,23 @@ module Homebrew
     str.force_encoding("UTF-8") if str.respond_to?(:force_encoding)
   end
 
-  private
-
-  def publish_changed_formula_bottles(_tap, changed_formulae_names)
+  def publish_changed_formula_bottles(tap, changed_formulae_names)
     if ENV["HOMEBREW_DISABLE_LOAD_FORMULA"]
       raise "Need to load formulae to publish them!"
     end
 
     published = []
-    bintray_creds = { user: ENV["BINTRAY_USER"], key: ENV["BINTRAY_KEY"] }
+    bintray_creds = { user: ENV["HOMEBREW_BINTRAY_USER"], key: ENV["HOMEBREW_BINTRAY_KEY"] }
     if bintray_creds[:user] && bintray_creds[:key]
       changed_formulae_names.each do |name|
         f = Formula[name]
         next if f.bottle_unneeded? || f.bottle_disabled?
-        ohai "Publishing on Bintray: #{f.name} #{f.pkg_version}"
-        publish_bottle_file_on_bintray(f, bintray_creds)
+        bintray_org = ARGV.value("bintray-org") || tap.user.downcase
+        next unless publish_bottle_file_on_bintray(f, bintray_org, bintray_creds)
         published << f.full_name
       end
     else
-      opoo "You must set BINTRAY_USER and BINTRAY_KEY to add or update bottles on Bintray!"
+      opoo "You must set HOMEBREW_BINTRAY_USER and HOMEBREW_BINTRAY_KEY to add or update bottles on Bintray!"
     end
     published
   end
@@ -284,7 +327,7 @@ module Homebrew
       extra_msg = @description ? "(#{@description})" : nil
       ohai "Fetching patch #{extra_msg}"
       puts "Patch: #{patch_url}"
-      curl patch_url, "-s", "-o", patchpath
+      curl_download patch_url, to: patchpath
     end
 
     def apply_patch
@@ -328,10 +371,10 @@ module Homebrew
     formulae = []
     others = []
     File.foreach(patchfile) do |line|
-      files << $1 if line =~ %r{^\+\+\+ b/(.*)}
+      files << Regexp.last_match(1) if line =~ %r{^\+\+\+ b/(.*)}
     end
     files.each do |file|
-      if tap && tap.formula_file?(file)
+      if tap&.formula_file?(file)
         formula_name = File.basename(file, ".rb")
         formulae << formula_name unless formulae.include?(formula_name)
       else
@@ -377,7 +420,7 @@ module Homebrew
           subject_strs << "remove stable"
           formula_name_str += ":" # just for cosmetics
         else
-          subject_strs << formula.version.to_s
+          subject_strs << new[:stable]
         end
       end
       if old[:devel] != new[:devel]
@@ -388,7 +431,7 @@ module Homebrew
             formula_name_str += ":" # just for cosmetics
           end
         else
-          subject_strs << "#{formula.devel.version} (devel)"
+          subject_strs << "#{new[:devel]} (devel)"
         end
       end
       subject = subject_strs.empty? ? nil : "#{formula_name_str} #{subject_strs.join(", ")}"
@@ -401,19 +444,29 @@ module Homebrew
   end
 
   # Publishes the current bottle files for a given formula to Bintray
-  def publish_bottle_file_on_bintray(f, creds)
+  def publish_bottle_file_on_bintray(f, bintray_org, creds)
     repo = Utils::Bottles::Bintray.repository(f.tap)
     package = Utils::Bottles::Bintray.package(f.name)
-    info = FormulaInfoFromJson.lookup(f.name)
+    info = FormulaInfoFromJson.lookup(f.full_name)
     if info.nil?
       raise "Failed publishing bottle: failed reading formula info for #{f.full_name}"
     end
+    unless info.bottle_info_any
+      opoo "No bottle defined in formula #{package}"
+      return false
+    end
     version = info.pkg_version
-    curl "-w", '\n', "--silent", "--fail",
-         "-u#{creds[:user]}:#{creds[:key]}", "-X", "POST",
-         "-H", "Content-Type: application/json",
-         "-d", '{"publish_wait_for_secs": 0}',
-         "https://api.bintray.com/content/homebrew/#{repo}/#{package}/#{version}/publish"
+    ohai "Publishing on Bintray: #{package} #{version}"
+    curl "--write-out", '\n', "--silent", "--fail",
+         "--user", "#{creds[:user]}:#{creds[:key]}", "--request", "POST",
+         "--header", "Content-Type: application/json",
+         "--data", '{"publish_wait_for_secs": 0}',
+         "https://api.bintray.com/content/#{bintray_org}/#{repo}/#{package}/#{version}/publish"
+    true
+  rescue => e
+    raise unless ARGV.include?("--warn-on-publish-failure")
+    onoe e
+    false
   end
 
   # Formula info drawn from an external "brew info --json" call
@@ -429,11 +482,11 @@ module Homebrew
     # Returns nil if formula is absent or if there was an error reading it
     def self.lookup(name)
       json = Utils.popen_read(HOMEBREW_BREW_FILE, "info", "--json=v1", name)
-      unless $?.success?
-        return nil
-      end
+
+      return nil unless $CHILD_STATUS.success?
+
       Homebrew.force_utf8!(json)
-      FormulaInfoFromJson.new(Utils::JSON.load(json)[0])
+      FormulaInfoFromJson.new(JSON.parse(json)[0])
     end
 
     def bottle_tags
@@ -531,19 +584,19 @@ module Homebrew
             req = Net::HTTP::Head.new bottle_info.url
             req.initialize_http_header "User-Agent" => HOMEBREW_USER_AGENT_RUBY
             res = http.request req
-            if res.is_a?(Net::HTTPSuccess)
-              break
-            elsif res.is_a?(Net::HTTPClientError)
-              if retry_count >= max_retries
-                raise "Failed to find published #{f} bottle at #{url}!"
-              end
-              print(wrote_dots ? "." : "Waiting on Bintray.")
-              wrote_dots = true
-              sleep poll_retry_delay_seconds
-              retry_count += 1
-            else
+            break if res.is_a?(Net::HTTPSuccess) || res.code == "302"
+
+            unless res.is_a?(Net::HTTPClientError)
               raise "Failed to find published #{f} bottle at #{url} (#{res.code} #{res.message})!"
             end
+
+            if retry_count >= max_retries
+              raise "Failed to find published #{f} bottle at #{url}!"
+            end
+            print(wrote_dots ? "." : "Waiting on Bintray.")
+            wrote_dots = true
+            sleep poll_retry_delay_seconds
+            retry_count += 1
           end
         end
 
@@ -558,7 +611,7 @@ module Homebrew
         # We're in the cache; make sure to force re-download
         loop do
           begin
-            curl url, "-o", filename
+            curl_download url, continue_at: 0, to: filename
             break
           rescue
             if retry_count >= max_curl_retries
@@ -574,5 +627,13 @@ module Homebrew
         Pathname.new(filename).verify_checksum(checksum)
       end
     end
+  end
+
+  def check_bintray_mirror(name, url)
+    headers, = curl_output("--connect-timeout", "15", "--location", "--head", url)
+    status_code = headers.scan(%r{^HTTP\/.* (\d+)}).last.first
+    return if status_code.start_with?("2")
+    opoo "The Bintray mirror #{url} is not reachable (HTTP status code #{status_code})."
+    opoo "Do you need to upload it with `brew mirror #{name}`?"
   end
 end

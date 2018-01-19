@@ -1,35 +1,37 @@
 require "cxxstdlib"
 require "ostruct"
 require "options"
-require "utils/json"
+require "json"
 require "development_tools"
+require "extend/cachable"
 
 # Inherit from OpenStruct to gain a generic initialization method that takes a
 # hash and creates an attribute for each key and value. `Tab.new` probably
 # should not be called directly, instead use one of the class methods like
 # `Tab.create`.
 class Tab < OpenStruct
-  FILENAME = "INSTALL_RECEIPT.json".freeze
-  CACHE = {}
+  extend Cachable
 
-  def self.clear_cache
-    CACHE.clear
-  end
+  FILENAME = "INSTALL_RECEIPT.json".freeze
 
   # Instantiates a Tab for a new installation of a formula.
   def self.create(formula, compiler, stdlib)
     build = formula.build
     attributes = {
+      "homebrew_version" => HOMEBREW_VERSION,
       "used_options" => build.used_options.as_flags,
       "unused_options" => build.unused_options.as_flags,
-      "tabfile" => formula.prefix.join(FILENAME),
+      "tabfile" => formula.prefix/FILENAME,
       "built_as_bottle" => build.bottle?,
+      "installed_as_dependency" => false,
+      "installed_on_request" => true,
       "poured_from_bottle" => false,
       "time" => Time.now.to_i,
       "source_modified_time" => formula.source_modified_time.to_i,
       "HEAD" => HOMEBREW_REPOSITORY.git_head,
       "compiler" => compiler,
       "stdlib" => stdlib,
+      "aliases" => formula.aliases,
       "runtime_dependencies" => formula.runtime_dependencies.map do |dep|
         f = dep.to_formula
         { "full_name" => f.full_name, "version" => f.version.to_s }
@@ -53,14 +55,13 @@ class Tab < OpenStruct
   # Returns the Tab for an install receipt at `path`.
   # Results are cached.
   def self.from_file(path)
-    CACHE.fetch(path) { |p| CACHE[p] = from_file_content(File.read(p), p) }
+    cache.fetch(path) { |p| cache[p] = from_file_content(File.read(p), p) }
   end
 
   # Like Tab.from_file, but bypass the cache.
   def self.from_file_content(content, path)
-    attributes = Utils::JSON.load(content)
+    attributes = JSON.parse(content)
     attributes["tabfile"] = path
-    attributes["runtime_dependencies"] ||= []
     attributes["source_modified_time"] ||= 0
     attributes["source"] ||= {}
 
@@ -96,13 +97,16 @@ class Tab < OpenStruct
   end
 
   def self.for_keg(keg)
-    path = keg.join(FILENAME)
+    path = keg/FILENAME
 
-    if path.exist?
+    tab = if path.exist?
       from_file(path)
     else
       empty
     end
+
+    tab["tabfile"] = path
+    tab
   end
 
   # Returns a tab for the named formula's installation,
@@ -140,7 +144,7 @@ class Tab < OpenStruct
 
     paths << f.installed_prefix
 
-    path = paths.map { |pn| pn.join(FILENAME) }.find(&:file?)
+    path = paths.map { |pn| pn/FILENAME }.find(&:file?)
 
     if path
       tab = from_file(path)
@@ -168,15 +172,19 @@ class Tab < OpenStruct
 
   def self.empty
     attributes = {
+      "homebrew_version" => HOMEBREW_VERSION,
       "used_options" => [],
       "unused_options" => [],
       "built_as_bottle" => false,
+      "installed_as_dependency" => false,
+      "installed_on_request" => true,
       "poured_from_bottle" => false,
       "time" => nil,
       "source_modified_time" => 0,
       "HEAD" => nil,
       "stdlib" => nil,
       "compiler" => DevelopmentTools.default_compiler,
+      "aliases" => [],
       "runtime_dependencies" => [],
       "source" => {
         "path" => nil,
@@ -218,10 +226,6 @@ class Tab < OpenStruct
     include?("c++11")
   end
 
-  def build_32_bit?
-    include?("32-bit")
-  end
-
   def head?
     spec == :head
   end
@@ -244,6 +248,17 @@ class Tab < OpenStruct
 
   def compiler
     super || DevelopmentTools.default_compiler
+  end
+
+  def parsed_homebrew_version
+    return Version::NULL if homebrew_version.nil?
+    Version.new(homebrew_version)
+  end
+
+  def runtime_dependencies
+    # Homebrew versions prior to 1.1.6 generated incorrect runtime dependency
+    # lists.
+    super unless parsed_homebrew_version < "1.1.6"
   end
 
   def cxxstdlib
@@ -300,24 +315,33 @@ class Tab < OpenStruct
 
   def to_json
     attributes = {
+      "homebrew_version" => homebrew_version,
       "used_options" => used_options.as_flags,
       "unused_options" => unused_options.as_flags,
       "built_as_bottle" => built_as_bottle,
       "poured_from_bottle" => poured_from_bottle,
+      "installed_as_dependency" => installed_as_dependency,
+      "installed_on_request" => installed_on_request,
+      "changed_files" => changed_files&.map(&:to_s),
       "time" => time,
       "source_modified_time" => source_modified_time.to_i,
       "HEAD" => self.HEAD,
       "stdlib" => (stdlib.to_s if stdlib),
       "compiler" => (compiler.to_s if compiler),
+      "aliases" => aliases,
       "runtime_dependencies" => runtime_dependencies,
       "source" => source,
     }
 
-    Utils::JSON.dump(attributes)
+    JSON.generate(attributes)
   end
 
   def write
-    CACHE[tabfile] = self
+    # If this is a new installation, the cache of installed formulae
+    # will no longer be valid.
+    Formula.clear_installed_formulae_cache unless tabfile.exist?
+
+    self.class.cache[tabfile] = self
     tabfile.atomic_write(to_json)
   end
 
@@ -328,9 +352,9 @@ class Tab < OpenStruct
     else
       s << "Built from source"
     end
-    if time
-      s << Time.at(time).strftime("on %Y-%m-%d at %H:%M:%S")
-    end
+
+    s << Time.at(time).strftime("on %Y-%m-%d at %H:%M:%S") if time
+
     unless used_options.empty?
       s << "with:"
       s << used_options.to_a.join(" ")

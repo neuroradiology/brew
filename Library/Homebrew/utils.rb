@@ -1,94 +1,31 @@
 require "pathname"
 require "emoji"
 require "exceptions"
-require "utils/hash"
-require "utils/json"
-require "utils/inreplace"
-require "utils/popen"
-require "utils/fork"
-require "utils/git"
 require "utils/analytics"
-require "utils/github"
 require "utils/curl"
+require "utils/fork"
+require "utils/formatter"
+require "utils/git"
+require "utils/github"
+require "utils/hash"
+require "utils/inreplace"
+require "utils/link"
+require "utils/popen"
+require "utils/svn"
+require "utils/tty"
+require "time"
 
-class Tty
-  class << self
-    def strip_ansi(string)
-      string.gsub(/\033\[\d+(;\d+)*m/, "")
-    end
-
-    def blue
-      bold 34
-    end
-
-    def white
-      bold 39
-    end
-
-    def magenta
-      bold 35
-    end
-
-    def red
-      underline 31
-    end
-
-    def yellow
-      underline 33
-    end
-
-    def reset
-      escape 0
-    end
-
-    def em
-      underline 39
-    end
-
-    def green
-      bold 32
-    end
-
-    def gray
-      bold 30
-    end
-
-    def highlight
-      bold 39
-    end
-
-    def width
-      `/usr/bin/tput cols`.strip.to_i
-    end
-
-    def truncate(str)
-      w = width
-      w > 10 ? str.to_s[0, w - 4] : str
-    end
-
-    private
-
-    def color(n)
-      escape "0;#{n}"
-    end
-
-    def bold(n)
-      escape "1;#{n}"
-    end
-
-    def underline(n)
-      escape "4;#{n}"
-    end
-
-    def escape(n)
-      "\033[#{n}m" if $stdout.tty?
-    end
-  end
+def require?(path)
+  return false if path.nil?
+  require path
+rescue LoadError => e
+  # we should raise on syntax errors but not if the file doesn't exist.
+  raise unless e.message.include?(path)
 end
 
 def ohai(title, *sput)
   title = Tty.truncate(title) if $stdout.tty? && !ARGV.verbose?
-  puts "#{Tty.blue}==>#{Tty.white} #{title}#{Tty.reset}"
+  puts Formatter.headline(title, color: :blue)
   puts sput
 end
 
@@ -96,16 +33,16 @@ def oh1(title, options = {})
   if $stdout.tty? && !ARGV.verbose? && options.fetch(:truncate, :auto) == :auto
     title = Tty.truncate(title)
   end
-  puts "#{Tty.green}==>#{Tty.white} #{title}#{Tty.reset}"
+  puts Formatter.headline(title, color: :green)
 end
 
 # Print a warning (do this rarely)
-def opoo(warning)
-  $stderr.puts "#{Tty.yellow}Warning#{Tty.reset}: #{warning}"
+def opoo(message)
+  $stderr.puts Formatter.warning(message, label: "Warning")
 end
 
-def onoe(error)
-  $stderr.puts "#{Tty.red}Error#{Tty.reset}: #{error}"
+def onoe(message)
+  $stderr.puts Formatter.error(message, label: "Error")
 end
 
 def ofail(error)
@@ -118,28 +55,36 @@ def odie(error)
   exit 1
 end
 
-def odeprecated(method, replacement = nil, options = {})
-  verb = if options[:die]
-    "disabled"
-  else
-    "deprecated"
-  end
-
+def odeprecated(method, replacement = nil, disable: false, disable_on: nil, caller: send(:caller))
   replacement_message = if replacement
     "Use #{replacement} instead."
   else
     "There is no replacement."
   end
 
+  unless disable_on.nil?
+    if disable_on > Time.now
+      will_be_disabled_message = " and will be disabled on #{disable_on.strftime("%Y-%m-%d")}"
+    else
+      disable = true
+    end
+  end
+
+  verb = if disable
+    "disabled"
+  else
+    "deprecated#{will_be_disabled_message}"
+  end
+
   # Try to show the most relevant location in message, i.e. (if applicable):
   # - Location in a formula.
   # - Location outside of 'compat/'.
   # - Location of caller of deprecated method (if all else fails).
-  backtrace = options.fetch(:caller, caller)
+  backtrace = caller
   tap_message = nil
   caller_message = backtrace.detect do |line|
-    next unless line =~ %r{^#{Regexp.escape HOMEBREW_LIBRARY}/Taps/([^/]+/[^/]+)/}
-    tap = Tap.fetch $1
+    next unless line =~ %r{^#{Regexp.escape(HOMEBREW_LIBRARY)}/Taps/([^/]+/[^/]+)/}
+    tap = Tap.fetch Regexp.last_match(1)
     tap_message = "\nPlease report this to the #{tap} tap!"
     true
   end
@@ -148,22 +93,23 @@ def odeprecated(method, replacement = nil, options = {})
   end
   caller_message ||= backtrace[1]
 
-  message = <<-EOS.undent
+  message = <<~EOS
     Calling #{method} is #{verb}!
     #{replacement_message}
     #{caller_message}#{tap_message}
   EOS
 
-  if ARGV.homebrew_developer? || options[:die] ||
+  if ARGV.homebrew_developer? || disable ||
      Homebrew.raise_deprecation_exceptions?
-    raise FormulaMethodDeprecatedError, message
-  else
+    developer_message = message + "Or, even better, submit a PR to fix it!"
+    raise MethodDeprecatedError, developer_message
+  elsif !Homebrew.auditing?
     opoo "#{message}\n"
   end
 end
 
 def odisabled(method, replacement = nil, options = {})
-  options = { die: true, caller: caller }.merge(options)
+  options = { disable: true, caller: caller }.merge(options)
   odeprecated(method, replacement, options)
 end
 
@@ -171,9 +117,9 @@ def pretty_installed(f)
   if !$stdout.tty?
     f.to_s
   elsif Emoji.enabled?
-    "#{Tty.highlight}#{f} #{Tty.green}#{Emoji.tick}#{Tty.reset}"
+    "#{Tty.bold}#{f} #{Formatter.success("✔")}#{Tty.reset}"
   else
-    "#{Tty.highlight}#{Tty.green}#{f} (installed)#{Tty.reset}"
+    Formatter.success("#{Tty.bold}#{f} (installed)#{Tty.reset}")
   end
 end
 
@@ -181,9 +127,9 @@ def pretty_uninstalled(f)
   if !$stdout.tty?
     f.to_s
   elsif Emoji.enabled?
-    "#{f} #{Tty.red}#{Emoji.cross}#{Tty.reset}"
+    "#{Tty.bold}#{f} #{Formatter.error("✘")}#{Tty.reset}"
   else
-    "#{Tty.red}#{f} (uninstalled)#{Tty.reset}"
+    Formatter.error("#{Tty.bold}#{f} (uninstalled)#{Tty.reset}")
   end
 end
 
@@ -194,16 +140,12 @@ def pretty_duration(s)
   if s > 59
     m = s / 60
     s %= 60
-    res = "#{m} minute#{plural m}"
+    res = Formatter.pluralize(m, "minute")
     return res if s.zero?
     res << " "
   end
 
-  res + "#{s} second#{plural s}"
-end
-
-def plural(n, s = "s")
-  n == 1 ? "" : s
+  res << Formatter.pluralize(s, "second")
 end
 
 def interactive_shell(f = nil)
@@ -213,22 +155,21 @@ def interactive_shell(f = nil)
   end
 
   if ENV["SHELL"].include?("zsh") && ENV["HOME"].start_with?(HOMEBREW_TEMP.resolved_path.to_s)
+    FileUtils.mkdir_p ENV["HOME"]
     FileUtils.touch "#{ENV["HOME"]}/.zshrc"
   end
 
   Process.wait fork { exec ENV["SHELL"] }
 
-  if $?.success?
-    return
-  elsif $?.exited?
-    raise "Aborted due to non-zero exit status (#{$?.exitstatus})"
-  else
-    raise $?.inspect
-  end
+  return if $CHILD_STATUS.success?
+  raise "Aborted due to non-zero exit status (#{$CHILD_STATUS.exitstatus})" if $CHILD_STATUS.exited?
+  raise $CHILD_STATUS.inspect
 end
 
 module Homebrew
-  def self._system(cmd, *args)
+  module_function
+
+  def _system(cmd, *args)
     pid = fork do
       yield if block_given?
       args.collect!(&:to_s)
@@ -240,50 +181,34 @@ module Homebrew
       exit! 1 # never gets here unless exec failed
     end
     Process.wait(pid)
-    $?.success?
+    $CHILD_STATUS.success?
   end
 
-  def self.system(cmd, *args)
-    puts "#{cmd} #{args*" "}" if ARGV.verbose?
+  def system(cmd, *args)
+    puts "#{cmd} #{args * " "}" if ARGV.verbose?
     _system(cmd, *args)
   end
 
-  def self.homebrew_version_string
-    if pretty_revision = HOMEBREW_REPOSITORY.git_short_head
-      last_commit = HOMEBREW_REPOSITORY.git_last_commit_date
-      "#{HOMEBREW_VERSION} (git revision #{pretty_revision}; last commit #{last_commit})"
-    else
-      "#{HOMEBREW_VERSION} (no git repository)"
-    end
-  end
-
-  def self.core_tap_version_string
-    require "tap"
-    tap = CoreTap.instance
-    return "N/A" unless tap.installed?
-    if pretty_revision = tap.git_short_head
-      last_commit = tap.git_last_commit_date
-      "(git revision #{pretty_revision}; last commit #{last_commit})"
-    else
-      "(no git repository)"
-    end
-  end
-
-  def self.install_gem_setup_path!(name, version = nil, executable = name)
+  def install_gem_setup_path!(name, version = nil, executable = name)
     # Respect user's preferences for where gems should be installed.
-    ENV["GEM_HOME"] = ENV["GEM_OLD_HOME"].to_s
-    ENV["GEM_HOME"] = Gem.user_dir if ENV["GEM_HOME"].empty?
-    ENV["GEM_PATH"] = ENV["GEM_OLD_PATH"] unless ENV["GEM_OLD_PATH"].to_s.empty?
+    ENV["GEM_HOME"] = if ENV["HOMEBREW_GEM_HOME"].to_s.empty?
+      Gem.user_dir
+    else
+      ENV["HOMEBREW_GEM_HOME"]
+    end
+    unless ENV["HOMEBREW_GEM_PATH"].to_s.empty?
+      ENV["GEM_PATH"] = ENV["HOMEBREW_GEM_PATH"]
+    end
 
     # Make rubygems notice env changes.
     Gem.clear_paths
     Gem::Specification.reset
 
     # Add Gem binary directory and (if missing) Ruby binary directory to PATH.
-    path = ENV["PATH"].split(File::PATH_SEPARATOR)
-    path.unshift(RUBY_BIN) if which("ruby") != RUBY_PATH
-    path.unshift("#{Gem.dir}/bin")
-    ENV["PATH"] = path.join(File::PATH_SEPARATOR)
+    path = PATH.new(ENV["PATH"])
+    path.prepend(RUBY_BIN) if which("ruby") != RUBY_PATH
+    path.prepend(Gem.bindir)
+    ENV["PATH"] = path
 
     if Gem::Specification.find_all_by_name(name, version).empty?
       ohai "Installing or updating '#{name}' gem"
@@ -304,20 +229,18 @@ module Homebrew
       odie "Failed to install/update the '#{name}' gem." if exit_code.nonzero?
     end
 
-    unless which executable
-      odie <<-EOS.undent
-        The '#{name}' gem is installed but couldn't find '#{executable}' in the PATH:
-        #{ENV["PATH"]}
-      EOS
-    end
+    return if which(executable)
+    odie <<~EOS
+      The '#{name}' gem is installed but couldn't find '#{executable}' in the PATH:
+      #{ENV["PATH"]}
+    EOS
   end
 
-  # Hash of Module => Set(method_names)
-  @@injected_dump_stat_modules = {}
-
+  # rubocop:disable Style/GlobalVars
   def inject_dump_stats!(the_module, pattern)
-    @@injected_dump_stat_modules[the_module] ||= []
-    injected_methods = @@injected_dump_stat_modules[the_module]
+    @injected_dump_stat_modules ||= {}
+    @injected_dump_stat_modules[the_module] ||= []
+    injected_methods = @injected_dump_stat_modules[the_module]
     the_module.module_eval do
       instance_methods.grep(pattern).each do |name|
         next if injected_methods.include? name
@@ -334,39 +257,34 @@ module Homebrew
       end
     end
 
-    if $times.nil?
-      $times = {}
-      at_exit do
-        col_width = [$times.keys.map(&:size).max + 2, 15].max
-        $times.sort_by { |_k, v| v }.each do |method, time|
-          puts format("%-*s %0.4f sec", col_width, "#{method}:", time)
-        end
+    return unless $times.nil?
+    $times = {}
+    at_exit do
+      col_width = [$times.keys.map(&:size).max + 2, 15].max
+      $times.sort_by { |_k, v| v }.each do |method, time|
+        puts format("%-*s %0.4f sec", col_width, "#{method}:", time)
       end
     end
   end
+  # rubocop:enable Style/GlobalVars
 end
 
-def with_system_path
-  old_path = ENV["PATH"]
-  ENV["PATH"] = "/usr/bin:/bin"
-  yield
-ensure
-  ENV["PATH"] = old_path
+def with_homebrew_path
+  with_env(PATH: PATH.new(ENV["HOMEBREW_PATH"])) do
+    yield
+  end
 end
 
 def with_custom_locale(locale)
-  old_locale = ENV["LC_ALL"]
-  ENV["LC_ALL"] = locale
-  yield
-ensure
-  ENV["LC_ALL"] = old_locale
+  with_env(LC_ALL: locale) do
+    yield
+  end
 end
 
-def run_as_not_developer(&_block)
-  old = ENV.delete "HOMEBREW_DEVELOPER"
-  yield
-ensure
-  ENV["HOMEBREW_DEVELOPER"] = old
+def run_as_not_developer
+  with_env(HOMEBREW_DEVELOPER: nil) do
+    yield
+  end
 end
 
 # Kernel.system but with exceptions
@@ -384,45 +302,8 @@ def quiet_system(cmd, *args)
   end
 end
 
-def puts_columns(items)
-  return if items.empty?
-
-  unless $stdout.tty?
-    puts items
-    return
-  end
-
-  # TTY case: If possible, output using multiple columns.
-  console_width = Tty.width
-  console_width = 80 if console_width <= 0
-  plain_item_lengths = items.map { |s| Tty.strip_ansi(s).length }
-  max_len = plain_item_lengths.max
-  col_gap = 2 # number of spaces between columns
-  gap_str = " " * col_gap
-  cols = (console_width + col_gap) / (max_len + col_gap)
-  cols = 1 if cols < 1
-  rows = (items.size + cols - 1) / cols
-  cols = (items.size + rows - 1) / rows # avoid empty trailing columns
-
-  if cols >= 2
-    col_width = (console_width + col_gap) / cols - col_gap
-    items = items.each_with_index.map do |item, index|
-      item + "".ljust(col_width - plain_item_lengths[index])
-    end
-  end
-
-  if cols == 1
-    puts items
-  else
-    rows.times do |row_index|
-      item_indices_for_row = row_index.step(items.size - 1, rows).to_a
-      puts items.values_at(*item_indices_for_row).join(gap_str)
-    end
-  end
-end
-
 def which(cmd, path = ENV["PATH"])
-  path.split(File::PATH_SEPARATOR).each do |p|
+  PATH.new(path).each do |p|
     begin
       pcmd = File.expand_path(cmd, p)
     rescue ArgumentError
@@ -436,7 +317,7 @@ def which(cmd, path = ENV["PATH"])
 end
 
 def which_all(cmd, path = ENV["PATH"])
-  path.split(File::PATH_SEPARATOR).map do |p|
+  PATH.new(path).map do |p|
     begin
       pcmd = File.expand_path(cmd, p)
     rescue ArgumentError
@@ -449,21 +330,21 @@ def which_all(cmd, path = ENV["PATH"])
 end
 
 def which_editor
-  editor = ENV.values_at("HOMEBREW_EDITOR", "VISUAL", "EDITOR").compact.first
-  return editor unless editor.nil?
+  editor = ENV.values_at("HOMEBREW_EDITOR", "HOMEBREW_VISUAL")
+              .compact
+              .reject(&:empty?)
+              .first
+  return editor if editor
 
-  # Find Textmate
-  editor = "mate" if which "mate"
-  # Find BBEdit / TextWrangler
-  editor ||= "edit" if which "edit"
-  # Find vim
-  editor ||= "vim" if which "vim"
-  # Default to standard vim
-  editor ||= "/usr/bin/vim"
+  # Find Atom, Sublime Text, Textmate, BBEdit / TextWrangler, or vim
+  editor = %w[atom subl mate edit vim].find do |candidate|
+    candidate if which(candidate, ENV["HOMEBREW_PATH"])
+  end
+  editor ||= "vim"
 
-  opoo <<-EOS.undent
+  opoo <<~EOS
     Using #{editor} because no editor was set in the environment.
-    This may change in the future, so we recommend setting EDITOR, VISUAL,
+    This may change in the future, so we recommend setting EDITOR,
     or HOMEBREW_EDITOR to your preferred text editor.
   EOS
 
@@ -472,11 +353,11 @@ end
 
 def exec_editor(*args)
   puts "Editing #{args.join "\n"}"
-  safe_exec(which_editor, *args)
+  with_homebrew_path { safe_exec(which_editor, *args) }
 end
 
 def exec_browser(*args)
-  browser = ENV["HOMEBREW_BROWSER"] || ENV["BROWSER"]
+  browser = ENV["HOMEBREW_BROWSER"]
   browser ||= OS::PATH_OPEN if defined?(OS::PATH_OPEN)
   return unless browser
   safe_exec(browser, *args)
@@ -491,7 +372,7 @@ end
 # GZips the given paths, and returns the gzipped paths
 def gzip(*paths)
   paths.collect do |path|
-    with_system_path { safe_system "gzip", path }
+    safe_system "gzip", path
     Pathname.new("#{path}.gz")
   end
 end
@@ -511,6 +392,15 @@ ensure
   trap("INT", std_trap)
 end
 
+def capture_stderr
+  old = $stderr
+  $stderr = StringIO.new
+  yield
+  $stderr.string
+ensure
+  $stderr = old
+end
+
 def nostdout
   if ARGV.verbose?
     yield
@@ -527,7 +417,7 @@ def nostdout
 end
 
 def paths
-  @paths ||= ENV["PATH"].split(File::PATH_SEPARATOR).collect do |p|
+  @paths ||= PATH.new(ENV["HOMEBREW_PATH"]).collect do |p|
     begin
       File.expand_path(p).chomp("/")
     rescue ArgumentError
@@ -539,13 +429,13 @@ end
 def disk_usage_readable(size_in_bytes)
   if size_in_bytes >= 1_073_741_824
     size = size_in_bytes.to_f / 1_073_741_824
-    unit = "G"
+    unit = "GB"
   elsif size_in_bytes >= 1_048_576
     size = size_in_bytes.to_f / 1_048_576
-    unit = "M"
+    unit = "MB"
   elsif size_in_bytes >= 1_024
     size = size_in_bytes.to_f / 1_024
-    unit = "K"
+    unit = "KB"
   else
     size = size_in_bytes
     unit = "B"
@@ -599,38 +489,6 @@ def truncate_text_to_approximate_size(s, max_bytes, options = {})
   out
 end
 
-def link_src_dst_dirs(src_dir, dst_dir, command, link_dir: false)
-  return unless src_dir.exist?
-  conflicts = []
-  src_paths = link_dir ? [src_dir] : src_dir.find
-  src_paths.each do |src|
-    next if src.directory? && !link_dir
-    dst = dst_dir/src.relative_path_from(src_dir)
-    if dst.symlink?
-      next if src == dst.resolved_path
-      dst.unlink
-    end
-    if dst.exist?
-      conflicts << dst
-      next
-    end
-    dst_dir.parent.mkpath
-    dst.make_relative_symlink(src)
-  end
-  unless conflicts.empty?
-    onoe <<-EOS.undent
-      Could not link:
-      #{conflicts.join("\n")}
-
-      Please delete these paths and run `#{command}`.
-    EOS
-  end
-end
-
-def link_path_manpages(path, command)
-  link_src_dst_dirs(path/"man", HOMEBREW_PREFIX/"share/man", command)
-end
-
 def migrate_legacy_keg_symlinks_if_necessary
   legacy_linked_kegs = HOMEBREW_LIBRARY/"LinkedKegs"
   return unless legacy_linked_kegs.directory?
@@ -668,4 +526,45 @@ def migrate_legacy_keg_symlinks_if_necessary
     FileUtils.ln_sf(src.relative_path_from(dst.parent), dst)
   end
   FileUtils.rm_rf legacy_pinned_kegs
+end
+
+# Calls the given block with the passed environment variables
+# added to ENV, then restores ENV afterwards.
+# Example:
+# with_env(PATH: "/bin") do
+#   system "echo $PATH"
+# end
+#
+# Note that this method is *not* thread-safe - other threads
+# which happen to be scheduled during the block will also
+# see these environment variables.
+def with_env(hash)
+  old_values = {}
+  begin
+    hash.each do |key, value|
+      key = key.to_s
+      old_values[key] = ENV.delete(key)
+      ENV[key] = value
+    end
+
+    yield if block_given?
+  ensure
+    ENV.update(old_values)
+  end
+end
+
+def shell_profile
+  Utils::Shell.profile
+end
+
+def tap_and_name_comparison
+  proc do |a, b|
+    if a.include?("/") && !b.include?("/")
+      1
+    elsif !a.include?("/") && b.include?("/")
+      -1
+    else
+      a <=> b
+    end
+  end
 end

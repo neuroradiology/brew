@@ -1,4 +1,4 @@
-#:  * `linkage` [`--test`] [`--reverse`]  <formula-name>:
+#:  * `linkage` [`--test`] [`--reverse`]  <formula>:
 #:    Checks the library links of an installed formula.
 #:
 #:    Only works on installed formulae. An error is raised if it is run on
@@ -13,6 +13,8 @@
 require "os/mac/linkage_checker"
 
 module Homebrew
+  module_function
+
   def linkage
     ARGV.kegs.each do |keg|
       ohai "Checking #{keg.name} linkage" if ARGV.kegs.size > 1

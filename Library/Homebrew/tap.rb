@@ -1,4 +1,5 @@
 require "extend/string"
+require "extend/cachable"
 require "readall"
 
 # a {Tap} is used to extend the formulae provided by Homebrew core.
@@ -8,13 +9,9 @@ require "readall"
 # {#user} represents Github username and {#repo} represents repository
 # name without leading `homebrew-`.
 class Tap
+  extend Cachable
+
   TAP_DIRECTORY = HOMEBREW_LIBRARY/"Taps"
-
-  CACHE = {}
-
-  def self.clear_cache
-    CACHE.clear
-  end
 
   def self.fetch(*args)
     case args.length
@@ -29,16 +26,25 @@ class Tap
       raise "Invalid tap name '#{args.join("/")}'"
     end
 
-    # we special case homebrew so users don't have to shift in a terminal
-    user = "Homebrew" if user == "homebrew"
+    # We special case homebrew and linuxbrew so that users don't have to shift in a terminal.
+    user = user.capitalize if ["homebrew", "linuxbrew"].include? user
     repo = repo.strip_prefix "homebrew-"
 
-    if user == "Homebrew" && (repo == "homebrew" || repo == "core")
+    if ["Homebrew", "Linuxbrew"].include?(user) && ["core", "homebrew"].include?(repo)
       return CoreTap.instance
     end
 
     cache_key = "#{user}/#{repo}".downcase
-    CACHE.fetch(cache_key) { |key| CACHE[key] = Tap.new(user, repo) }
+    cache.fetch(cache_key) { |key| cache[key] = Tap.new(user, repo) }
+  end
+
+  def self.from_path(path)
+    match = path.to_s.match(HOMEBREW_TAP_PATH_REGEX)
+    raise "Invalid tap path '#{path}'" unless match
+    fetch(match[:user], match[:repo])
+  rescue
+    # No need to error as a nil tap is sufficient to show failure.
+    nil
   end
 
   extend Enumerable
@@ -55,6 +61,11 @@ class Tap
   # e.g. `user/repo`
   attr_reader :name
 
+  # The full name of this {Tap}, including the `homebrew-` prefix.
+  # It combines {#user} and 'homebrew-'-prefixed {#repo} with a slash.
+  # e.g. `user/homebrew-repo`
+  attr_reader :full_name
+
   # The local path to this {Tap}.
   # e.g. `/usr/local/Library/Taps/user/homebrew-repo`
   attr_reader :path
@@ -64,7 +75,8 @@ class Tap
     @user = user
     @repo = repo
     @name = "#{@user}/#{@repo}".downcase
-    @path = TAP_DIRECTORY/"#{@user}/homebrew-#{@repo}".downcase
+    @full_name = "#{@user}/homebrew-#{@repo}"
+    @path = TAP_DIRECTORY/@full_name.downcase
     @path.extend(GitRepositoryExtension)
   end
 
@@ -95,12 +107,18 @@ class Tap
 
   # The default remote path to this {Tap}.
   def default_remote
-    "https://github.com/#{user}/homebrew-#{repo}"
+    "https://github.com/#{full_name}"
   end
 
   # True if this {Tap} is a git repository.
   def git?
     path.git?
+  end
+
+  # git branch for this {Tap}.
+  def git_branch
+    raise TapUnavailableError, name unless installed?
+    path.git_branch
   end
 
   # git HEAD for this {Tap}.
@@ -130,13 +148,19 @@ class Tap
   # The issues URL of this {Tap}.
   # e.g. `https://github.com/user/homebrew-repo/issues`
   def issues_url
-    if official? || !custom_remote?
-      "https://github.com/#{user}/homebrew-#{repo}/issues"
-    end
+    return unless official? || !custom_remote?
+    "#{default_remote}/issues"
   end
 
   def to_s
     name
+  end
+
+  def version_string
+    return "N/A" unless installed?
+    pretty_revision = git_short_head
+    return "(no git repository)" unless pretty_revision
+    "(git revision #{pretty_revision}; last commit #{git_last_commit_date})"
   end
 
   # True if this {Tap} is an official Homebrew tap.
@@ -186,6 +210,10 @@ class Tap
     quiet = options.fetch(:quiet, false)
     requested_remote = options[:clone_target] || default_remote
 
+    if official? && DEPRECATED_OFFICIAL_TAPS.include?(repo)
+      opoo "#{name} was deprecated. This tap is now empty as all its formulae were migrated."
+    end
+
     if installed?
       raise TapAlreadyTappedError, name unless full_clone
       raise TapAlreadyUnshallowError, name unless shallow?
@@ -200,7 +228,7 @@ class Tap
       end
 
       ohai "Unshallowing #{name}" unless quiet
-      args = %W[fetch --unshallow]
+      args = %w[fetch --unshallow]
       args << "-q" if quiet
       path.cd { safe_system "git", *args }
       return
@@ -230,25 +258,28 @@ class Tap
       raise
     end
 
-    link_manpages
+    link_completions_and_manpages
 
     formula_count = formula_files.size
-    puts "Tapped #{formula_count} formula#{plural(formula_count, "e")} (#{path.abv})" unless quiet
+    puts "Tapped #{Formatter.pluralize(formula_count, "formula")} (#{path.abv})" unless quiet
     Descriptions.cache_formulae(formula_names)
 
-    if !options[:clone_target] && private? && !quiet
-      puts <<-EOS.undent
-        It looks like you tapped a private repository. To avoid entering your
-        credentials each time you update, you can use git HTTP credential
-        caching or issue the following command:
-          cd #{path}
-          git remote set-url origin git@github.com:#{user}/homebrew-#{repo}.git
-      EOS
-    end
+    return if options[:clone_target]
+    return unless private?
+    return if quiet
+    puts <<~EOS
+      It looks like you tapped a private repository. To avoid entering your
+      credentials each time you update, you can use git HTTP credential
+      caching or issue the following command:
+        cd #{path}
+        git remote set-url origin git@github.com:#{full_name}.git
+    EOS
   end
 
-  def link_manpages
-    link_path_manpages(path, "brew tap --repair")
+  def link_completions_and_manpages
+    command = "brew tap --repair"
+    Utils::Link.link_manpages(path, command)
+    Utils::Link.link_completions(path, command)
   end
 
   # uninstall this {Tap}.
@@ -260,21 +291,12 @@ class Tap
     unpin if pinned?
     formula_count = formula_files.size
     Descriptions.uncache_formulae(formula_names)
-    unlink_manpages
+    Utils::Link.unlink_manpages(path)
+    Utils::Link.unlink_completions(path)
     path.rmtree
     path.parent.rmdir_if_possible
-    puts "Untapped #{formula_count} formula#{plural(formula_count, "e")}"
+    puts "Untapped #{Formatter.pluralize(formula_count, "formula")}"
     clear_cache
-  end
-
-  def unlink_manpages
-    return unless (path/"man").exist?
-    (path/"man").find do |src|
-      next if src.directory?
-      dst = HOMEBREW_PREFIX/"share"/src.relative_path_from(path)
-      dst.delete if dst.symlink? && src == dst.resolved_path
-      dst.parent.rmdir_if_possible
-    end
   end
 
   # True if the {#remote} of {Tap} is customized.
@@ -285,17 +307,21 @@ class Tap
 
   # path to the directory of all {Formula} files for this {Tap}.
   def formula_dir
-    @formula_dir ||= [path/"Formula", path/"HomebrewFormula", path].detect(&:directory?)
+    @formula_dir ||= potential_formula_dirs.detect(&:directory?) || path/"Formula"
+  end
+
+  def potential_formula_dirs
+    @potential_formula_dirs ||= [path/"Formula", path/"HomebrewFormula", path].freeze
   end
 
   # path to the directory of all {Cask} files for this {Tap}.
   def cask_dir
-    @cask_dir ||= [path/"Casks"].detect(&:directory?)
+    @cask_dir ||= path/"Casks"
   end
 
   # an array of all {Formula} files of this {Tap}.
   def formula_files
-    @formula_files ||= if formula_dir
+    @formula_files ||= if formula_dir.directory?
       formula_dir.children.select(&method(:formula_file?))
     else
       []
@@ -304,7 +330,7 @@ class Tap
 
   # an array of all {Cask} files of this {Tap}.
   def cask_files
-    @cask_files ||= if cask_dir
+    @cask_files ||= if cask_dir.directory?
       cask_dir.children.select(&method(:cask_file?))
     else
       []
@@ -435,10 +461,10 @@ class Tap
 
   # Hash with tap formula renames
   def formula_renames
-    require "utils/json"
+    require "json"
 
     @formula_renames ||= if (rename_file = path/"formula_renames.json").file?
-      Utils::JSON.load(rename_file.read)
+      JSON.parse(rename_file.read)
     else
       {}
     end
@@ -446,10 +472,10 @@ class Tap
 
   # Hash with tap migrations
   def tap_migrations
-    require "utils/json"
+    require "json"
 
     @tap_migrations ||= if (migration_file = path/"tap_migrations.json").file?
-      Utils::JSON.load(migration_file.read)
+      JSON.parse(migration_file.read)
     else
       {}
     end
@@ -463,6 +489,8 @@ class Tap
   def self.each
     return unless TAP_DIRECTORY.directory?
 
+    return to_enum unless block_given?
+
     TAP_DIRECTORY.subdirs.each do |user|
       user.subdirs.each do |repo|
         yield fetch(user.basename.to_s, repo.basename.to_s)
@@ -472,7 +500,12 @@ class Tap
 
   # an array of all installed {Tap} names.
   def self.names
-    map(&:name)
+    map(&:name).sort
+  end
+
+  # an array of all tap cmd directory {Pathname}s
+  def self.cmd_directories
+    Pathname.glob TAP_DIRECTORY/"*/*/cmd"
   end
 
   # @private
@@ -496,7 +529,7 @@ class Tap
         if custom_remote?
           true
         else
-          GitHub.private_repo?(user, "homebrew-#{repo}")
+          GitHub.private_repo?(full_name)
         end
       rescue GitHub::HTTPNotFoundError
         true
@@ -509,13 +542,11 @@ end
 
 # A specialized {Tap} class for the core formulae
 class CoreTap < Tap
-  if OS.mac?
-    def default_remote
-      "https://github.com/Homebrew/homebrew-core"
-    end
-  else
-    def default_remote
-      "https://github.com/Linuxbrew/homebrew-core"
+  def default_remote
+    if OS.mac? || ENV["HOMEBREW_FORCE_HOMEBREW_ORG"]
+      "https://github.com/Homebrew/homebrew-core".freeze
+    else
+      "https://github.com/Linuxbrew/homebrew-core".freeze
     end
   end
 
@@ -525,14 +556,12 @@ class CoreTap < Tap
   end
 
   def self.instance
-    @instance ||= CoreTap.new
+    @instance ||= new
   end
 
-  def self.ensure_installed!(options = {})
+  def self.ensure_installed!
     return if instance.installed?
-    args = ["tap", instance.name]
-    args << "-q" if options.fetch(:quiet, true)
-    safe_system HOMEBREW_BREW_FILE, *args
+    safe_system HOMEBREW_BREW_FILE, "tap", instance.name
   end
 
   # @private
@@ -627,6 +656,5 @@ class TapConfig
     tap.path.cd do
       safe_system "git", "config", "--local", "--replace-all", "homebrew.#{key}", value.to_s
     end
-    value
   end
 end

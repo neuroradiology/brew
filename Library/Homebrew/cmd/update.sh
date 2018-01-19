@@ -1,11 +1,11 @@
 #:  * `update` [`--merge`] [`--force`]:
 #:    Fetch the newest version of Homebrew and all formulae from GitHub using
-#:    `git`(1).
+#:    `git`(1) and perform any necessary migrations.
 #:
 #:    If `--merge` is specified then `git merge` is used to include updates
 #:    (rather than `git rebase`).
 #:
-#:    If `--force` is specified then always do a slower, full update check even
+#:    If `--force` (or `-f`) is specified then always do a slower, full update check even
 #:    if unnecessary.
 
 # Hide shellcheck complaint:
@@ -23,7 +23,7 @@ git() {
 }
 
 git_init_if_necessary() {
-  if [[ -n "$HOMEBREW_MACOS" ]]
+  if [[ -n "$HOMEBREW_MACOS" ]] || [[ -n "$HOMEBREW_FORCE_HOMEBREW_ORG" ]]
   then
     BREW_OFFICIAL_REMOTE="https://github.com/Homebrew/brew"
     CORE_OFFICIAL_REMOTE="https://github.com/Homebrew/homebrew-core"
@@ -215,15 +215,19 @@ merge_or_rebase() {
 
   trap reset_on_interrupt SIGINT
 
-  if [[ "$DIR" = "$HOMEBREW_REPOSITORY" && -z "$HOMEBREW_NO_UPDATE_CLEANUP" ]]
+  if [[ "$DIR" = "$HOMEBREW_REPOSITORY" && -n "$HOMEBREW_UPDATE_TO_TAG" ]]
   then
-    UPSTREAM_TAG="$(git tag --list --sort=-version:refname | head -n1)"
+    UPSTREAM_TAG="$(git tag --list |
+                    sort --field-separator=. --key=1,1nr -k 2,2nr -k 3,3nr |
+                    grep --max-count=1 '^[0-9]*\.[0-9]*\.[0-9]*$')"
+  else
+    UPSTREAM_TAG=""
   fi
 
   if [ -n "$UPSTREAM_TAG" ]
   then
     REMOTE_REF="refs/tags/$UPSTREAM_TAG"
-    UPSTREAM_BRANCH="v$UPSTREAM_TAG"
+    UPSTREAM_BRANCH="stable"
   else
     REMOTE_REF="origin/$UPSTREAM_BRANCH"
   fi
@@ -242,7 +246,7 @@ merge_or_rebase() {
              stash save --include-untracked "${QUIET_ARGS[@]}"
     then
       odie <<EOS
-Could not `git stash` in $DIR!
+Could not 'git stash' in $DIR!
 Please stash/commit manually if you need to keep your changes or, if not, run:
   cd $DIR
   git reset --hard origin/master
@@ -253,19 +257,13 @@ EOS
   fi
 
   INITIAL_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)"
-  if [[ "$INITIAL_BRANCH" != "$UPSTREAM_BRANCH" && -n "$INITIAL_BRANCH" ]]
+  if [[ -n "$UPSTREAM_TAG" ]] ||
+     [[ "$INITIAL_BRANCH" != "$UPSTREAM_BRANCH" && -n "$INITIAL_BRANCH" ]]
   then
-
-    if [[ -z "$HOMEBREW_NO_UPDATE_CLEANUP" ]]
-    then
-      echo "Checking out $UPSTREAM_BRANCH in $DIR..."
-      echo "To checkout $INITIAL_BRANCH in $DIR run:"
-      echo "  'cd $DIR && git checkout $INITIAL_BRANCH"
-    fi
-
     # Recreate and check out `#{upstream_branch}` if unable to fast-forward
     # it to `origin/#{@upstream_branch}`. Otherwise, just check it out.
-    if git merge-base --is-ancestor "$UPSTREAM_BRANCH" "$REMOTE_REF" &>/dev/null
+    if [[ -z "$UPSTREAM_TAG" ]] &&
+       git merge-base --is-ancestor "$UPSTREAM_BRANCH" "$REMOTE_REF" &>/dev/null
     then
       git checkout --force "$UPSTREAM_BRANCH" "${QUIET_ARGS[@]}"
     else
@@ -301,7 +299,8 @@ EOS
 
   if [[ -n "$HOMEBREW_NO_UPDATE_CLEANUP" ]]
   then
-    if [[ "$INITIAL_BRANCH" != "$UPSTREAM_BRANCH" && -n "$INITIAL_BRANCH" ]]
+    if [[ "$INITIAL_BRANCH" != "$UPSTREAM_BRANCH" && -n "$INITIAL_BRANCH" &&
+          ! "$INITIAL_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]|stable$ ]]
     then
       git checkout "$INITIAL_BRANCH" "${QUIET_ARGS[@]}"
     fi
@@ -337,7 +336,7 @@ homebrew-update() {
       *)
         odie <<EOS
 This command updates brew itself, and does not take formula names.
-Use 'brew upgrade <formula>'.
+Use 'brew upgrade $@' instead.
 EOS
         ;;
     esac
@@ -353,6 +352,8 @@ EOS
     if [[ -n "$HOMEBREW_DEVELOPER" || -n "$HOMEBREW_DEV_CMD_RUN" ]]
     then
       export HOMEBREW_NO_UPDATE_CLEANUP="1"
+    else
+      export HOMEBREW_UPDATE_TO_TAG="1"
     fi
   fi
 
@@ -382,6 +383,13 @@ user account:
 EOS
   fi
 
+  # we may want to use a Homebrew curl
+  if [[ -n "$HOMEBREW_FORCE_BREWED_CURL" &&
+      ! -x "$HOMEBREW_PREFIX/opt/curl/bin/curl" ]]
+  then
+    brew install curl
+  fi
+
   if ! git --version >/dev/null 2>&1
   then
     # we cannot install brewed git if homebrew/core is unavailable.
@@ -402,9 +410,6 @@ EOS
     QUIET_ARGS=()
   fi
 
-  # ensure GIT_CONFIG is unset as we need to operate on .git/config
-  unset GIT_CONFIG
-
   # only allow one instance of brew update
   lock update
 
@@ -416,7 +421,7 @@ EOS
   safe_cd "$HOMEBREW_REPOSITORY"
 
   # kill all of subprocess on interrupt
-  trap '{ pkill -P $$; wait; exit 130; }' SIGINT
+  trap '{ /usr/bin/pkill -P $$; wait; exit 130; }' SIGINT
 
   local update_failed_file="$HOMEBREW_REPOSITORY/.git/UPDATE_FAILED"
   rm -f "$update_failed_file"
@@ -457,14 +462,6 @@ EOS
       then
         # Skip taps checked/fetched recently
         [[ -n "$(find "$DIR/.git/FETCH_HEAD" -type f -mtime -"${HOMEBREW_AUTO_UPDATE_SECS}"s 2>/dev/null)" ]] && exit
-
-        # Skip taps without formulae (but always update Homebrew/brew and Homebrew/homebrew-core)
-        if [[ "$DIR" != "$HOMEBREW_REPOSITORY" &&
-              "$DIR" != "$HOMEBREW_LIBRARY/Taps/homebrew/homebrew-core" ]]
-        then
-          FORMULAE="$(find "$DIR" -maxdepth 1 \( -name "*.rb" -or -name Formula -or -name HomebrewFormula \) -print -quit)"
-          [[ -z "$FORMULAE" ]] && exit
-        fi
       fi
 
       UPSTREAM_REPOSITORY_URL="$(git config remote.origin.url)"
@@ -472,15 +469,30 @@ EOS
       then
         UPSTREAM_REPOSITORY="${UPSTREAM_REPOSITORY_URL#https://github.com/}"
         UPSTREAM_REPOSITORY="${UPSTREAM_REPOSITORY%.git}"
-        UPSTREAM_BRANCH_LOCAL_SHA="$(git rev-parse "refs/remotes/origin/$UPSTREAM_BRANCH_DIR")"
-        # Only try to `git fetch` when the upstream branch is at a different SHA
-        # (so the API does not return 304: unmodified).
+
+        if [[ "$DIR" = "$HOMEBREW_REPOSITORY" && -n "$HOMEBREW_UPDATE_TO_TAG" ]]
+        then
+          # Only try to `git fetch` when the upstream tags have changed
+          # (so the API does not return 304: unmodified).
+          GITHUB_API_ETAG="$(sed -n 's/^ETag: "\([a-f0-9]\{32\}\)".*/\1/p' ".git/GITHUB_HEADERS" 2>/dev/null)"
+          GITHUB_API_ACCEPT="application/vnd.github.v3+json"
+          GITHUB_API_ENDPOINT="tags"
+        else
+          # Only try to `git fetch` when the upstream branch is at a different SHA
+          # (so the API does not return 304: unmodified).
+          GITHUB_API_ETAG="$(git rev-parse "refs/remotes/origin/$UPSTREAM_BRANCH_DIR")"
+          GITHUB_API_ACCEPT="application/vnd.github.v3.sha"
+          GITHUB_API_ENDPOINT="commits/$UPSTREAM_BRANCH_DIR"
+        fi
+
         UPSTREAM_SHA_HTTP_CODE="$("$HOMEBREW_CURL" --silent --max-time 3 \
            --output /dev/null --write-out "%{http_code}" \
+           --dump-header "$DIR/.git/GITHUB_HEADERS" \
            --user-agent "$HOMEBREW_USER_AGENT_CURL" \
-           --header "Accept: application/vnd.github.v3.sha" \
-           --header "If-None-Match: \"$UPSTREAM_BRANCH_LOCAL_SHA\"" \
-           "https://api.github.com/repos/$UPSTREAM_REPOSITORY/commits/$UPSTREAM_BRANCH_DIR")"
+           --header "Accept: $GITHUB_API_ACCEPT" \
+           --header "If-None-Match: \"$GITHUB_API_ETAG\"" \
+           "https://api.github.com/repos/$UPSTREAM_REPOSITORY/$GITHUB_API_ENDPOINT")"
+
         # Touch FETCH_HEAD to confirm we've checked for an update.
         [[ -f "$DIR/.git/FETCH_HEAD" ]] && touch "$DIR/.git/FETCH_HEAD"
         [[ -z "$HOMEBREW_UPDATE_FORCE" ]] && [[ "$UPSTREAM_SHA_HTTP_CODE" = "304" ]] && exit
@@ -556,6 +568,7 @@ EOS
         -d "$HOMEBREW_LIBRARY/LinkedKegs" ||
         (-n "$HOMEBREW_DEVELOPER" && -z "$HOMEBREW_UPDATE_PREINSTALL") ]]
   then
+    unset HOMEBREW_RUBY_PATH
     brew update-report "$@"
     return $?
   elif [[ -z "$HOMEBREW_UPDATE_PREINSTALL" ]]

@@ -31,7 +31,7 @@ class Cmd
     @deps = Set.new(ENV.fetch("HOMEBREW_DEPENDENCIES") { "" }.split(","))
     @formula_prefix = ENV["HOMEBREW_FORMULA_PREFIX"]
     # matches opt or cellar prefix and formula name
-    @keg_regex = %r[(#{Regexp.escape(opt)}|#{Regexp.escape(cellar)})/([\w\-_\+]+)]
+    @keg_regex = %r[(#{Regexp.escape(opt)}|#{Regexp.escape(cellar)})/([\w+-.@]+)]
   end
 
   def mode
@@ -43,6 +43,8 @@ class Cmd
       else
         :cc
       end
+    elsif @args.include?("-xc++-header") || @args.each_cons(2).include?(["-x", "c++-header"])
+      :cxx
     elsif @args.include? "-E"
       :ccE
     else
@@ -58,6 +60,8 @@ class Cmd
     @tool ||= case @arg0
     when "ld" then "ld"
     when "cpp" then "cpp"
+    when /llvm_(clang(\+\+)?)/
+     "#{ENV["HOMEBREW_PREFIX"]}/opt/llvm/bin/#{$1}"
     when /\w\+\+(-\d(\.\d)?)?$/
       case ENV["HOMEBREW_CC"]
       when /clang/
@@ -70,7 +74,11 @@ class Cmd
     else
       # Note that this is a universal fallback, so that we'll always invoke
       # HOMEBREW_CC regardless of what name under which the tool was invoked.
-      ENV["HOMEBREW_CC"]
+      if ENV["HOMEBREW_CC"] == "llvm_clang"
+        "#{ENV["HOMEBREW_PREFIX"]}/opt/llvm/bin/clang"
+      else
+        ENV["HOMEBREW_CC"]
+      end
     end
   end
 
@@ -160,7 +168,7 @@ class Cmd
       "-fcaller-saves", "-fthread-jumps", "-fno-reorder-blocks", "-fcse-skip-blocks",
       "-frerun-cse-after-loop", "-frerun-loop-opt", "-fcse-follow-jumps",
       "-fno-regmove", "-fno-for-scope", "-fno-tree-pre", "-fno-tree-dominator-opts",
-      "-fuse-linker-plugin"
+      "-fuse-linker-plugin", "-frounding-math"
       # clang doesn't support these flags
       args << arg unless tool =~ /^clang/
     when "--fast-math"
@@ -169,6 +177,8 @@ class Cmd
     when "-Wno-deprecated-register"
       # older gccs don't support these flags
       args << arg unless tool =~ /^g..-4.[02]/
+    when /^-Wl,-z,defs/
+      # -Wl,-undefined,error is already the default
     when /^-W[alp],/, /^-Wno-/
       args << arg
     when /^-W.*/
@@ -202,10 +212,6 @@ class Cmd
   end
 
   def keep?(path)
-    # The logic in this method will eventually become the default,
-    # but is currently opt-in.
-    return keep_orig?(path) unless ENV["HOMEBREW_EXPERIMENTAL_FILTER_FLAGS_ON_DEPS"]
-
     # Allow references to self
     if formula_prefix && path.start_with?("#{formula_prefix}/")
       true
@@ -220,11 +226,6 @@ class Cmd
       # ignore MacPorts, Boxen's Homebrew, X11, fink
       !path.start_with?("/opt/local", "/opt/boxen/homebrew", "/opt/X11", "/sw", "/usr/X11")
     end
-  end
-
-  # The original less-smart version of keep_orig; will eventually be removed
-  def keep_orig?(path)
-    path.start_with?(prefix, cellar, tmpdir) || !path.start_with?("/opt/local", "/opt/boxen/homebrew", "/opt/X11", "/sw", "/usr/X11")
   end
 
   def cflags

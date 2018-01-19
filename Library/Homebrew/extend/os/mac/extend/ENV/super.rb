@@ -1,4 +1,6 @@
 module Superenv
+  alias x11? x11
+
   # @private
   def self.bin
     return unless DevelopmentTools.installed?
@@ -7,7 +9,7 @@ module Superenv
   end
 
   def effective_sysroot
-    MacOS::Xcode.without_clt? ? MacOS.sdk_path.to_s : nil
+    MacOS.sdk_path.to_s if MacOS::Xcode.without_clt?
   end
 
   def homebrew_extra_paths
@@ -26,7 +28,7 @@ module Superenv
   # @private
   def homebrew_extra_pkg_config_paths
     paths = \
-      ["#{HOMEBREW_LIBRARY}/Homebrew/os/mac/pkgconfig/#{MacOS.version}"]
+      ["/usr/lib/pkgconfig", "#{HOMEBREW_LIBRARY}/Homebrew/os/mac/pkgconfig/#{MacOS.version}"]
     paths << "#{MacOS::X11.lib}/pkgconfig" << "#{MacOS::X11.share}/pkgconfig" if x11?
     paths
   end
@@ -88,19 +90,24 @@ module Superenv
   def setup_build_environment(formula = nil)
     generic_setup_build_environment(formula)
     self["HOMEBREW_SDKROOT"] = effective_sysroot
+    self["SDKROOT"] = MacOS.sdk_path if MacOS::Xcode.without_clt?
 
-    if MacOS::Xcode.without_clt? || (MacOS::Xcode.installed? && MacOS::Xcode.version.to_i >= 7)
-      self["MACOSX_DEPLOYMENT_TARGET"] = MacOS.version.to_s
-      self["SDKROOT"] = MacOS.sdk_path
-    end
-
-    # Filter out symbols known not to be defined on 10.11 since GNU Autotools
-    # can't reliably figure this out with Xcode 8 on its own yet.
-    if MacOS.version == "10.11" && MacOS::Xcode.installed? && MacOS::Xcode.version >= "8.0"
-      %w[basename_r clock_getres clock_gettime clock_settime dirname_r
-         getentropy mkostemp mkostemps].each do |s|
+    # Filter out symbols known not to be defined since GNU Autotools can't
+    # reliably figure this out with Xcode 8 and above.
+    if MacOS.version == "10.12" && MacOS::Xcode.version >= "9.0"
+      %w[fmemopen futimens open_memstream utimensat].each do |s|
         ENV["ac_cv_func_#{s}"] = "no"
       end
+    elsif MacOS.version == "10.11" && MacOS::Xcode.version >= "8.0"
+      %w[basename_r clock_getres clock_gettime clock_settime dirname_r
+         getentropy mkostemp mkostemps timingsafe_bcmp].each do |s|
+        ENV["ac_cv_func_#{s}"] = "no"
+      end
+
+      ENV["ac_cv_search_clock_gettime"] = "no"
+
+      # works around libev.m4 unsetting ac_cv_func_clock_gettime
+      ENV["ac_have_clock_syscall"] = "no"
     end
 
     # On 10.9, the tools in /usr/bin proxy to the active developer directory.
@@ -115,9 +122,4 @@ module Superenv
   def no_weak_imports
     append "HOMEBREW_CCCFG", "w" if no_weak_imports_support?
   end
-
-  # These methods are no longer necessary under superenv, but are needed to
-  # maintain an interface compatible with stdenv.
-  alias_method :macosxsdk, :noop
-  alias_method :remove_macosxsdk, :noop
 end

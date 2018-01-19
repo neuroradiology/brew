@@ -10,6 +10,8 @@ require "cleanup"
 require "utils"
 
 module Homebrew
+  module_function
+
   def update_preinstall_header
     @header_already_printed ||= begin
       ohai "Auto-updated Homebrew!" if ARGV.include?("--preinstall")
@@ -23,11 +25,19 @@ module Homebrew
         Utils.popen_read("git", "config", "--local", "--get", "homebrew.analyticsmessage").chuzzle
       analytics_disabled = \
         Utils.popen_read("git", "config", "--local", "--get", "homebrew.analyticsdisabled").chuzzle
-      if analytics_message_displayed != "true" && analytics_disabled != "true" && !ENV["HOMEBREW_NO_ANALYTICS"]
+      if analytics_message_displayed != "true" && analytics_disabled != "true" &&
+         !ENV["HOMEBREW_NO_ANALYTICS"] && !ENV["HOMEBREW_NO_ANALYTICS_MESSAGE_OUTPUT"]
         ENV["HOMEBREW_NO_ANALYTICS_THIS_RUN"] = "1"
-        ohai "Homebrew has enabled anonymous aggregate user behaviour analytics"
-        puts "Read the analytics documentation (and how to opt-out) here:"
-        puts "  https://git.io/brew-analytics"
+        # Use the shell's audible bell.
+        print "\a"
+
+        # Use an extra newline and bold to avoid this being missed.
+        ohai "Homebrew has enabled anonymous aggregate user behaviour analytics."
+        puts <<~EOS
+          #{Tty.bold}Read the analytics documentation (and how to opt-out) here:
+            #{Formatter.url("https://docs.brew.sh/Analytics.html")}#{Tty.reset}
+
+        EOS
 
         # Consider the message possibly missed if not a TTY.
         if $stdout.tty?
@@ -70,7 +80,7 @@ module Homebrew
 
     unless updated_taps.empty?
       update_preinstall_header
-      puts "Updated #{updated_taps.size} tap#{plural(updated_taps.size)} " \
+      puts "Updated #{Formatter.pluralize(updated_taps.size, "tap")} " \
            "(#{updated_taps.join(", ")})."
       updated = true
     end
@@ -94,8 +104,8 @@ module Homebrew
       puts if ARGV.include?("--preinstall")
     end
 
-    link_completions_and_docs
-    Tap.each(&:link_manpages)
+    link_completions_manpages_and_docs
+    Tap.each(&:link_completions_and_manpages)
 
     Homebrew.failed = true if ENV["HOMEBREW_UPDATE_FAILED"]
 
@@ -106,16 +116,15 @@ module Homebrew
     end
   end
 
-  private
-
   def shorten_revision(revision)
     Utils.popen_read("git", "-C", HOMEBREW_REPOSITORY, "rev-parse", "--short", revision).chomp
   end
 
   def install_core_tap_if_necessary
+    return if ENV["HOMEBREW_UPDATE_TEST"]
     core_tap = CoreTap.instance
     return if core_tap.installed?
-    CoreTap.ensure_installed! quiet: false
+    CoreTap.ensure_installed!
     revision = core_tap.git_head
     ENV["HOMEBREW_UPDATE_BEFORE_HOMEBREW_HOMEBREW_CORE"] = revision
     ENV["HOMEBREW_UPDATE_AFTER_HOMEBREW_HOMEBREW_CORE"] = revision
@@ -158,7 +167,7 @@ module Homebrew
     end
 
     if @migration_failed
-      opoo <<-EOS.undent
+      opoo <<~EOS
         Failed to migrate #{legacy_cache} to
         #{HOMEBREW_CACHE}. Please do so manually.
       EOS
@@ -167,7 +176,7 @@ module Homebrew
       FileUtils.rm_rf legacy_cache
       if legacy_cache.exist?
         FileUtils.touch migration_attempted_file
-        opoo <<-EOS.undent
+        opoo <<~EOS
           Failed to delete #{legacy_cache}.
           Please do so manually.
         EOS
@@ -182,7 +191,7 @@ module Homebrew
     ohai "Migrating HOMEBREW_REPOSITORY (please wait)..."
 
     unless HOMEBREW_PREFIX.writable_real?
-      ofail <<-EOS.undent
+      ofail <<~EOS
         #{HOMEBREW_PREFIX} is not writable.
 
         You should change the ownership and permissions of #{HOMEBREW_PREFIX}
@@ -194,8 +203,9 @@ module Homebrew
     end
 
     new_homebrew_repository = Pathname.new "/usr/local/Homebrew"
+    new_homebrew_repository.rmdir_if_possible
     if new_homebrew_repository.exist?
-      ofail <<-EOS.undent
+      ofail <<~EOS
         #{new_homebrew_repository} already exists.
         Please remove it manually or uninstall and reinstall Homebrew into a new
         location as the migration cannot be done automatically.
@@ -248,7 +258,7 @@ module Homebrew
     end
 
     unless unremovable_paths.empty?
-      ofail <<-EOS.undent
+      ofail <<~EOS
         Could not remove old HOMEBREW_REPOSITORY paths!
         Please do this manually with:
           sudo rm -rf #{unremovable_paths.join " "}
@@ -264,7 +274,7 @@ module Homebrew
     begin
       FileUtils.ln_s(src.relative_path_from(dst.parent), dst)
     rescue Errno::EACCES, Errno::ENOENT
-      ofail <<-EOS.undent
+      ofail <<~EOS
         Could not create symlink at #{dst}!
         Please do this manually with:
           sudo ln -sf #{src} #{dst}
@@ -272,39 +282,34 @@ module Homebrew
       EOS
     end
 
-    link_completions_and_docs(new_homebrew_repository)
+    link_completions_manpages_and_docs(new_homebrew_repository)
 
     ohai "Migrated HOMEBREW_REPOSITORY to #{new_homebrew_repository}!"
-    puts <<-EOS.undent
+    puts <<~EOS
       Homebrew no longer needs to have ownership of /usr/local. If you wish you can
       return /usr/local to its default ownership with:
         sudo chown root:wheel #{HOMEBREW_PREFIX}
     EOS
   rescue => e
-    ofail <<-EOS.undent
-      #{Tty.white}Failed to migrate HOMEBREW_REPOSITORY to #{new_homebrew_repository}!
+    ofail <<~EOS
+      #{Tty.bold}Failed to migrate HOMEBREW_REPOSITORY to #{new_homebrew_repository}!#{Tty.reset}
       The error was:
         #{e}
       Please try to resolve this error yourself and then run `brew update` again to
       complete the migration. If you need help please +1 an existing error or comment
       with your new error in issue:
-        #{Tty.em}https://github.com/Homebrew/brew/issues/987#{Tty.reset}
+        #{Formatter.url("https://github.com/Homebrew/brew/issues/987")}
     EOS
     $stderr.puts e.backtrace
   end
 
-  def link_completions_and_docs(repository = HOMEBREW_REPOSITORY)
+  def link_completions_manpages_and_docs(repository = HOMEBREW_REPOSITORY)
     command = "brew update"
-    link_src_dst_dirs(repository/"completions/bash",
-                      HOMEBREW_PREFIX/"etc/bash_completion.d", command)
-    link_src_dst_dirs(repository/"docs",
-                      HOMEBREW_PREFIX/"share/doc/homebrew", command, link_dir: true)
-    link_src_dst_dirs(repository/"completions/zsh",
-                      HOMEBREW_PREFIX/"share/zsh/site-functions", command)
-    link_src_dst_dirs(repository/"manpages",
-                      HOMEBREW_PREFIX/"share/man/man1", command)
+    Utils::Link.link_completions(repository, command)
+    Utils::Link.link_manpages(repository, command)
+    Utils::Link.link_docs(repository, command)
   rescue => e
-    ofail <<-EOS.undent
+    ofail <<~EOS
       Failed to link all completions, docs and manpages:
         #{e}
     EOS
@@ -357,14 +362,17 @@ class Reporter
 
       case status
       when "A", "D"
-        @report[status.to_sym] << tap.formula_file_to_name(src)
+        full_name = tap.formula_file_to_name(src)
+        name = full_name.split("/").last
+        new_tap = tap.tap_migrations[name]
+        @report[status.to_sym] << full_name unless new_tap
       when "M"
         begin
           formula = Formulary.factory(tap.path/src)
           new_version = formula.pkg_version
           old_version = FormulaVersions.new(formula).formula_at_revision(@initial_revision, &:pkg_version)
           next if new_version == old_version
-        rescue Exception => e
+        rescue Exception => e # rubocop:disable Lint/RescueException
           onoe "#{e.message}\n#{e.backtrace.join "\n"}" if ARGV.homebrew_developer?
         end
         @report[:M] << tap.formula_file_to_name(src)
@@ -378,7 +386,7 @@ class Reporter
       end
     end
 
-    renamed_formulae = []
+    renamed_formulae = Set.new
     @report[:D].each do |old_full_name|
       old_name = old_full_name.split("/").last
       new_name = tap.formula_renames[old_name]
@@ -393,10 +401,24 @@ class Reporter
       renamed_formulae << [old_full_name, new_full_name] if @report[:A].include? new_full_name
     end
 
+    @report[:A].each do |new_full_name|
+      new_name = new_full_name.split("/").last
+      old_name = tap.formula_renames.key(new_name)
+      next unless old_name
+
+      if tap.core_tap?
+        old_full_name = old_name
+      else
+        old_full_name = "#{tap}/#{old_name}"
+      end
+
+      renamed_formulae << [old_full_name, new_full_name]
+    end
+
     unless renamed_formulae.empty?
       @report[:A] -= renamed_formulae.map(&:last)
       @report[:D] -= renamed_formulae.map(&:first)
-      @report[:R] = renamed_formulae
+      @report[:R] = renamed_formulae.to_a
     end
 
     @report
@@ -412,24 +434,33 @@ class Reporter
       new_tap_name = tap.tap_migrations[name]
       next if new_tap_name.nil? # skip if not in tap_migrations list.
 
+      new_tap_user, new_tap_repo, new_tap_new_name = new_tap_name.split("/")
+      new_name = if new_tap_new_name
+        new_full_name = new_tap_new_name
+        new_tap_name = "#{new_tap_user}/#{new_tap_repo}"
+        new_tap_new_name
+      else
+        new_full_name = "#{new_tap_name}/#{name}"
+        name
+      end
+
       # This means it is a Cask
       if report[:DC].include? full_name
-        next unless (HOMEBREW_REPOSITORY/"Caskroom"/name).exist?
+        next unless (HOMEBREW_PREFIX/"Caskroom"/new_name).exist?
         new_tap = Tap.fetch(new_tap_name)
         new_tap.install unless new_tap.installed?
-        ohai "#{name} has been moved to Homebrew.", <<-EOS.undent
+        ohai "#{name} has been moved to Homebrew.", <<~EOS
           To uninstall the cask run:
             brew cask uninstall --force #{name}
         EOS
-        new_full_name = "#{new_tap_name}/#{name}"
-        next if (HOMEBREW_CELLAR/name.split("/").last).directory?
-        ohai "Installing #{name}..."
+        next if (HOMEBREW_CELLAR/new_name.split("/").last).directory?
+        ohai "Installing #{new_name}..."
         system HOMEBREW_BREW_FILE, "install", new_full_name
         begin
           unless Formulary.factory(new_full_name).keg_only?
             system HOMEBREW_BREW_FILE, "link", new_full_name, "--overwrite"
           end
-        rescue Exception => e
+        rescue Exception => e # rubocop:disable Lint/RescueException
           onoe "#{e.message}\n#{e.backtrace.join "\n"}" if ARGV.homebrew_developer?
         end
         next
@@ -441,19 +472,25 @@ class Reporter
       new_tap = Tap.fetch(new_tap_name)
       # For formulae migrated to cask: Auto-install cask or provide install instructions.
       if new_tap_name == "caskroom/cask"
-        if new_tap.installed? && (HOMEBREW_REPOSITORY/"Caskroom").directory?
-          ohai "#{name} has been moved to Homebrew Cask."
-          ohai "brew uninstall --force #{name}"
-          system HOMEBREW_BREW_FILE, "uninstall", "--force", name
+        if new_tap.installed? && (HOMEBREW_PREFIX/"Caskroom").directory?
+          ohai "#{name} has been moved to Homebrew-Cask."
+          ohai "brew unlink #{name}"
+          system HOMEBREW_BREW_FILE, "unlink", name
           ohai "brew prune"
           system HOMEBREW_BREW_FILE, "prune"
-          ohai "brew cask install #{name}"
-          system HOMEBREW_BREW_FILE, "cask", "install", name
+          ohai "brew cask install #{new_name}"
+          system HOMEBREW_BREW_FILE, "cask", "install", new_name
+          ohai <<~EOS
+            #{name} has been moved to Homebrew-Cask.
+            The existing keg has been unlinked.
+            Please uninstall the formula when convenient by running:
+              brew uninstall --force #{name}
+          EOS
         else
-          ohai "#{name} has been moved to Homebrew Cask.", <<-EOS.undent
+          ohai "#{name} has been moved to Homebrew-Cask.", <<~EOS
             To uninstall the formula and install the cask run:
               brew uninstall --force #{name}
-              brew cask install #{name}
+              brew cask install #{new_name}
           EOS
         end
       else
@@ -466,24 +503,30 @@ class Reporter
   end
 
   def migrate_formula_rename
-    report[:R].each do |old_full_name, new_full_name|
-      old_name = old_full_name.split("/").last
-      next unless (dir = HOMEBREW_CELLAR/old_name).directory? && !dir.subdirs.empty?
+    Formula.installed.each do |formula|
+      next unless Migrator.needs_migration?(formula)
+
+      oldname = formula.oldname
+      oldname_rack = HOMEBREW_CELLAR/oldname
+
+      if oldname_rack.subdirs.empty?
+        oldname_rack.rmdir_if_possible
+        next
+      end
+
+      new_name = tap.formula_renames[oldname]
+      next unless new_name
+
+      new_full_name = "#{tap}/#{new_name}"
 
       begin
         f = Formulary.factory(new_full_name)
-      rescue Exception => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
         onoe "#{e.message}\n#{e.backtrace.join "\n"}" if ARGV.homebrew_developer?
         next
       end
 
-      begin
-        migrator = Migrator.new(f)
-        migrator.migrate
-      rescue Migrator::MigratorDifferentTapsError
-      rescue Exception => e
-        onoe e
-      end
+      Migrator.migrate_if_needed(f)
     end
   end
 
@@ -505,6 +548,8 @@ class Reporter
 end
 
 class ReporterHub
+  extend Forwardable
+
   attr_reader :reporters
 
   def initialize
@@ -522,9 +567,7 @@ class ReporterHub
     @hash.update(report) { |_key, oldval, newval| oldval.concat(newval) }
   end
 
-  def empty?
-    @hash.empty?
-  end
+  delegate :empty? => :@hash
 
   def dump
     # Key Legend: Added (A), Copied (C), Deleted (D), Modified (M), Renamed (R)
@@ -540,20 +583,22 @@ class ReporterHub
   def dump_formula_report(key, title)
     formulae = select_formula(key).sort.map do |name, new_name|
       # Format list items of renamed formulae
-      if key == :R
+      case key
+      when :R
         name = pretty_installed(name) if installed?(name)
         new_name = pretty_installed(new_name) if installed?(new_name)
         "#{name} -> #{new_name}"
+      when :A
+        name unless installed?(name)
       else
         installed?(name) ? pretty_installed(name) : name
       end
-    end
+    end.compact
 
-    unless formulae.empty?
-      # Dump formula list.
-      ohai title
-      puts_columns(formulae)
-    end
+    return if formulae.empty?
+    # Dump formula list.
+    ohai title
+    puts Formatter.columns(formulae.sort)
   end
 
   def installed?(formula)

@@ -1,4 +1,31 @@
 module HomebrewArgvExtension
+  def formula_install_option_names
+    %w[
+      --debug
+      --env=
+      --ignore-dependencies
+      --cc=
+      --build-from-source
+      --devel
+      --HEAD
+      --keep-tmp
+      --interactive
+      --git
+      --sandbox
+      --no-sandbox
+      --build-bottle
+      --force-bottle
+      --verbose
+      --force
+      -i
+      -v
+      -d
+      -g
+      -s
+      -f
+    ].freeze
+  end
+
   def named
     @named ||= self - options_only
   end
@@ -19,7 +46,7 @@ module HomebrewArgvExtension
       else
         Formulary.find_with_priority(name, spec)
       end
-    end
+    end.uniq(&:name)
   end
 
   def resolved_formulae
@@ -30,7 +57,7 @@ module HomebrewArgvExtension
         if f.any_version_installed?
           tab = Tab.for_formula(f)
           resolved_spec = spec(nil) || tab.spec
-          f.set_active_spec(resolved_spec) if f.send(resolved_spec)
+          f.active_spec = resolved_spec if f.send(resolved_spec)
           f.build = tab
           if f.head? && tab.tabfile
             k = Keg.new(tab.tabfile.parent)
@@ -54,17 +81,19 @@ module HomebrewArgvExtension
       f.follow_installed_alias = false
 
       f
-    end
+    end.uniq(&:name)
   end
 
   def casks
-    @casks ||= downcased_unique_named.grep HOMEBREW_CASK_TAP_FORMULA_REGEX
+    @casks ||= downcased_unique_named.grep HOMEBREW_CASK_TAP_CASK_REGEX
   end
 
   def kegs
     require "keg"
     require "formula"
     @kegs ||= downcased_unique_named.collect do |name|
+      raise UsageError if name.empty?
+
       rack = Formulary.to_rack(name.downcase)
 
       dirs = rack.directory? ? rack.subdirs : []
@@ -88,14 +117,14 @@ module HomebrewArgvExtension
             Formulary.from_rack(rack)
           end
 
-          if (prefix = f.installed_prefix).directory?
-            Keg.new(prefix)
-          else
+          unless (prefix = f.installed_prefix).directory?
             raise MultipleVersionsInstalledError, rack.basename
           end
+
+          Keg.new(prefix)
         end
       rescue FormulaUnavailableError
-        raise <<-EOS.undent
+        raise <<~EOS
           Multiple kegs installed to #{rack}
           However we don't know which one you refer to.
           Please delete (with rm -rf!) all but one and then try again.
@@ -104,19 +133,25 @@ module HomebrewArgvExtension
     end
   end
 
-  # self documenting perhaps?
   def include?(arg)
-    @n=index arg
+    !(@n = index(arg)).nil?
   end
 
   def next
-    at(@n+1) || raise(UsageError)
+    at(@n + 1) || raise(UsageError)
   end
 
   def value(name)
     arg_prefix = "--#{name}="
     flag_with_value = find { |arg| arg.start_with?(arg_prefix) }
-    flag_with_value.strip_prefix(arg_prefix) if flag_with_value
+    flag_with_value&.strip_prefix(arg_prefix)
+  end
+
+  # Returns an array of values that were given as a comma-separated list.
+  # @see value
+  def values(name)
+    return unless val = value(name)
+    val.split(",")
   end
 
   def force?
@@ -195,20 +230,13 @@ module HomebrewArgvExtension
     include? "--universal"
   end
 
-  # Request a 32-bit only build.
-  # This is needed for some use-cases though we prefer to build Universal
-  # when a 32-bit version is needed.
-  def build_32_bit?
-    include? "--32-bit"
-  end
-
   def build_bottle?
     include?("--build-bottle") || !ENV["HOMEBREW_BUILD_BOTTLE"].nil?
   end
 
   def bottle_arch
     arch = value "bottle-arch"
-    arch.to_sym if arch
+    arch&.to_sym
   end
 
   def build_from_source?
@@ -216,7 +244,7 @@ module HomebrewArgvExtension
   end
 
   def build_all_from_source?
-    !!ENV["HOMEBREW_BUILD_FROM_SOURCE"]
+    !ENV["HOMEBREW_BUILD_FROM_SOURCE"].nil?
   end
 
   # Whether a given formula should be built from source during the current
@@ -260,7 +288,6 @@ module HomebrewArgvExtension
 
     build_flags << "--HEAD" if build_head?
     build_flags << "--universal" if build_universal?
-    build_flags << "--32-bit" if build_32_bit?
     build_flags << "--build-bottle" if build_bottle?
     build_flags << "--build-from-source" if build_from_source?
 

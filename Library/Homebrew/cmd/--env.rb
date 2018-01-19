@@ -6,6 +6,8 @@ require "build_environment"
 require "utils/shell"
 
 module Homebrew
+  module_function
+
   def __env
     ENV.activate_extensions!
     ENV.deps = ARGV.formulae if superenv?
@@ -20,9 +22,9 @@ module Homebrew
       # legacy behavior
       shell = :bash unless $stdout.tty?
     elsif shell_value == "auto"
-      shell = Utils::Shell.parent_shell || Utils::Shell.preferred_shell
+      shell = Utils::Shell.parent || Utils::Shell.preferred
     elsif shell_value
-      shell = Utils::Shell.path_to_shell(shell_value)
+      shell = Utils::Shell.from_path(shell_value)
     end
 
     env_keys = build_env_keys(ENV)

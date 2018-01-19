@@ -34,9 +34,11 @@
 require "tap"
 
 module Homebrew
+  module_function
+
   def tap
     if ARGV.include? "--repair"
-      Tap.each(&:link_manpages)
+      Tap.each(&:link_completions_and_manpages)
     elsif ARGV.include? "--list-official"
       require "official_taps"
       puts OFFICIAL_TAPS.map { |t| "homebrew/#{t}" }
@@ -52,26 +54,12 @@ module Homebrew
                     quiet: ARGV.quieter?
       rescue TapRemoteMismatchError => e
         odie e
-      rescue TapAlreadyTappedError, TapAlreadyUnshallowError
-        # Do nothing.
+      rescue TapAlreadyTappedError, TapAlreadyUnshallowError # rubocop:disable Lint/HandleExceptions
       end
     end
   end
 
   def full_clone?
     ARGV.include?("--full") || ARGV.homebrew_developer?
-  end
-
-  # @deprecated this method will be removed in the future, if no external commands use it.
-  def install_tap(user, repo, clone_target = nil)
-    opoo "Homebrew.install_tap is deprecated, use Tap#install."
-    tap = Tap.fetch(user, repo)
-    begin
-      tap.install(clone_target: clone_target, full_clone: full_clone?)
-    rescue TapAlreadyTappedError
-      false
-    else
-      true
-    end
   end
 end

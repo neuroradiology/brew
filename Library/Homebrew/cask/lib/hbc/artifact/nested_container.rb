@@ -1,24 +1,36 @@
-require "hbc/artifact/base"
+require "hbc/artifact/abstract_artifact"
 
-class Hbc::Artifact::NestedContainer < Hbc::Artifact::Base
-  def install_phase
-    @cask.artifacts[:nested_container].each { |container| extract(container) }
-  end
+module Hbc
+  module Artifact
+    class NestedContainer < AbstractArtifact
+      attr_reader :path
 
-  def uninstall_phase
-    # no need to take action; is removed after extraction
-  end
+      def initialize(cask, path)
+        super(cask)
+        @path = cask.staged_path.join(path)
+      end
 
-  def extract(container_relative_path)
-    source = @cask.staged_path.join(container_relative_path)
-    container = Hbc::Container.for_path(source, @command)
+      def install_phase(**options)
+        extract(**options)
+      end
 
-    unless container
-      raise Hbc::CaskError, "Aw dang, could not identify nested container at '#{source}'"
+      private
+
+      def summarize
+        path.relative_path_from(cask.staged_path).to_s
+      end
+
+      def extract(command: nil, verbose: nil, **_)
+        container = Container.for_path(path, command)
+
+        unless container
+          raise CaskError, "Aw dang, could not identify nested container at '#{source}'"
+        end
+
+        ohai "Extracting nested container #{path.relative_path_from(cask.staged_path)}"
+        container.new(cask, path, command, verbose: verbose).extract
+        FileUtils.remove_entry_secure(path)
+      end
     end
-
-    ohai "Extracting nested container #{source.basename}"
-    container.new(@cask, source, @command).extract
-    FileUtils.remove_entry_secure(source)
   end
 end

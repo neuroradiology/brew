@@ -60,15 +60,13 @@ class EmbeddedPatch
     false
   end
 
-  def contents
-  end
+  def contents; end
 
   def apply
     data = contents.gsub("HOMEBREW_PREFIX", HOMEBREW_PREFIX)
-    cmd = "/usr/bin/patch"
     args = %W[-g 0 -f -#{strip}]
-    IO.popen("#{cmd} #{args.join(" ")}", "w") { |p| p.write(data) }
-    raise ErrorDuringExecution.new(cmd, args) unless $?.success?
+    Utils.popen_write("patch", *args) { |p| p.write(data) }
+    raise ErrorDuringExecution.new("patch", args) unless $CHILD_STATUS.success?
   end
 
   def inspect
@@ -87,10 +85,13 @@ class DATAPatch < EmbeddedPatch
   def contents
     data = ""
     path.open("rb") do |f|
-      begin
+      loop do
         line = f.gets
-      end until line.nil? || /^__END__$/ === line
-      data << line while line = f.gets
+        break if line.nil? || line =~ /^__END__$/
+      end
+      while line = f.gets
+        data << line
+      end
     end
     data
   end
@@ -108,7 +109,13 @@ class StringPatch < EmbeddedPatch
 end
 
 class ExternalPatch
+  extend Forwardable
+
   attr_reader :resource, :strip
+
+  def_delegators :resource,
+    :url, :fetch, :patch_files, :verify_download_integrity, :cached_download,
+    :clear_cache
 
   def initialize(strip, &block)
     @strip    = strip
@@ -130,47 +137,22 @@ class ExternalPatch
       patch_dir = Pathname.pwd
       if patch_files.empty?
         children = patch_dir.children
-        if children.length == 1 && children.first.file?
-          patch_files << children.first.basename
-        else
-          raise MissingApplyError, <<-EOS.undent
+        if children.length != 1 || !children.first.file?
+          raise MissingApplyError, <<~EOS
             There should be exactly one patch file in the staging directory unless
             the "apply" method was used one or more times in the patch-do block.
           EOS
         end
+        patch_files << children.first.basename
       end
       dir.cd do
         patch_files.each do |patch_file|
           ohai "Applying #{patch_file}"
           patch_file = patch_dir/patch_file
-          safe_system "/usr/bin/patch", "-g", "0", "-f", "-#{strip}", "-i", patch_file
+          safe_system "patch", "-g", "0", "-f", "-#{strip}", "-i", patch_file
         end
       end
     end
-  end
-
-  def url
-    resource.url
-  end
-
-  def fetch
-    resource.fetch
-  end
-
-  def patch_files
-    resource.patch_files
-  end
-
-  def verify_download_integrity(fn)
-    resource.verify_download_integrity(fn)
-  end
-
-  def cached_download
-    resource.cached_download
-  end
-
-  def clear_cache
-    resource.clear_cache
   end
 
   def inspect

@@ -1,18 +1,25 @@
-class Hbc::CLI::Home < Hbc::CLI::Base
-  def self.run(*cask_tokens)
-    if cask_tokens.empty?
-      odebug "Opening project homepage"
-      system "/usr/bin/open", "--", "http://caskroom.io/"
-    else
-      cask_tokens.each do |cask_token|
-        odebug "Opening homepage for Cask #{cask_token}"
-        cask = Hbc.load(cask_token)
-        system "/usr/bin/open", "--", cask.homepage
+module Hbc
+  class CLI
+    class Home < AbstractCommand
+      def run
+        if casks.none?
+          odebug "Opening project homepage"
+          self.class.open_url "https://caskroom.github.io/"
+        else
+          casks.each do |cask|
+            odebug "Opening homepage for Cask #{cask}"
+            self.class.open_url cask.homepage
+          end
+        end
+      end
+
+      def self.open_url(url)
+        SystemCommand.run!(OS::PATH_OPEN, args: ["--", url])
+      end
+
+      def self.help
+        "opens the homepage of the given Cask"
       end
     end
-  end
-
-  def self.help
-    "opens the homepage of the given Cask"
   end
 end

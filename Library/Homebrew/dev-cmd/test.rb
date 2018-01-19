@@ -1,5 +1,5 @@
 #:  * `test` [`--devel`|`--HEAD`] [`--debug`] [`--keep-tmp`] <formula>:
-#:    A few formulae provide a test method. `brew test` <formula> runs this
+#:    Most formulae provide a test method. `brew test` <formula> runs this
 #:    test method. There is no standard output or return code, but it should
 #:    generally indicate to the user if something is wrong with the installed
 #:    formula.
@@ -7,7 +7,7 @@
 #:    To test the development or head version of a formula, use `--devel` or
 #:    `--HEAD`.
 #:
-#:    If `--debug` is passed and the test fails, an interactive debugger will be
+#:    If `--debug` (or `-d`) is passed and the test fails, an interactive debugger will be
 #:    launched with access to IRB or a shell inside the temporary test directory.
 #:
 #:    If `--keep-tmp` is passed, the temporary files created for the test are
@@ -21,6 +21,8 @@ require "sandbox"
 require "timeout"
 
 module Homebrew
+  module_function
+
   def test
     raise FormulaUnspecifiedError if ARGV.named.empty?
 
@@ -34,6 +36,12 @@ module Homebrew
       # Cannot test formulae without a test method
       unless f.test_defined?
         ofail "#{f.full_name} defines no test"
+        next
+      end
+
+      # Don't test unlinked formulae
+      if !ARGV.force? && !f.keg_only? && !f.linked?
+        ofail "#{f.full_name} is not linked"
         next
       end
 
@@ -57,8 +65,6 @@ module Homebrew
           args << "--devel"
         end
 
-        Sandbox.print_sandbox_message if Sandbox.test?
-
         Utils.safe_fork do
           if Sandbox.test?
             sandbox = Sandbox.new
@@ -75,10 +81,10 @@ module Homebrew
             exec(*args)
           end
         end
-      rescue Assertions::FailedAssertion => e
+      rescue ::Test::Unit::AssertionFailedError => e
         ofail "#{f.full_name}: failed"
         puts e.message
-      rescue Exception => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
         ofail "#{f.full_name}: failed"
         puts e, e.backtrace
       ensure

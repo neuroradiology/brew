@@ -3,30 +3,19 @@ require "tempfile"
 
 class Sandbox
   SANDBOX_EXEC = "/usr/bin/sandbox-exec".freeze
-  SANDBOXED_TAPS = [
-    "homebrew/core",
-  ].freeze
 
   def self.available?
     OS.mac? && OS::Mac.version >= "10.6" && File.executable?(SANDBOX_EXEC)
   end
 
-  def self.formula?(formula)
+  def self.formula?(_formula)
     return false unless available?
-    return false if ARGV.no_sandbox?
-    ARGV.sandbox? || SANDBOXED_TAPS.include?(formula.tap.to_s)
+    !ARGV.no_sandbox?
   end
 
   def self.test?
     return false unless available?
     !ARGV.no_sandbox?
-  end
-
-  def self.print_sandbox_message
-    unless @printed_sandbox_message
-      ohai "Using the sandbox"
-      @printed_sandbox_message = true
-    end
   end
 
   def initialize
@@ -73,17 +62,21 @@ class Sandbox
 
   # Xcode projects expect access to certain cache/archive dirs.
   def allow_write_xcode
-    allow_write_path "/Users/#{ENV["USER"]}/Library/Developer/Xcode/DerivedData/"
+    allow_write_path "/Users/#{ENV["USER"]}/Library/Developer"
   end
 
   def allow_write_log(formula)
     allow_write_path formula.logs
   end
 
-  def deny_write_homebrew_library
-    deny_write_path HOMEBREW_LIBRARY
-    deny_write_path HOMEBREW_REPOSITORY/".git"
+  def deny_write_homebrew_repository
     deny_write HOMEBREW_BREW_FILE
+    if HOMEBREW_PREFIX.to_s != HOMEBREW_REPOSITORY.to_s
+      deny_write_path HOMEBREW_REPOSITORY
+    else
+      deny_write_path HOMEBREW_LIBRARY
+      deny_write_path HOMEBREW_REPOSITORY/".git"
+    end
   end
 
   def exec(*args)
@@ -145,7 +138,7 @@ class Sandbox
   end
 
   class SandboxProfile
-    SEATBELT_ERB = <<-EOS.undent
+    SEATBELT_ERB = <<~EOS.freeze
       (version 1)
       (debug deny) ; log all denied operations to /var/log/system.log
       <%= rules.join("\n") %>
@@ -153,6 +146,7 @@ class Sandbox
           (literal "/dev/ptmx")
           (literal "/dev/dtracehelper")
           (literal "/dev/null")
+          (literal "/dev/random")
           (literal "/dev/zero")
           (regex #"^/dev/fd/[0-9]+$")
           (regex #"^/dev/ttys?[0-9]*$")
@@ -173,7 +167,7 @@ class Sandbox
 
     def add_rule(rule)
       s = "("
-      s << (rule[:allow] ? "allow": "deny")
+      s << (rule[:allow] ? "allow" : "deny")
       s << " #{rule[:operation]}"
       s << " (#{rule[:filter]})" if rule[:filter]
       s << " (with #{rule[:modifier]})" if rule[:modifier]

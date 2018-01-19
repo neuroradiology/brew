@@ -11,6 +11,8 @@
 require "formula"
 
 module Homebrew
+  module_function
+
   def diy
     path = Pathname.getwd
 
@@ -31,11 +33,9 @@ module Homebrew
   def detect_version(path)
     version = path.version.to_s
 
-    if version.empty?
-      raise "Couldn't determine version, set it with --version=<version>"
-    else
-      version
-    end
+    raise "Couldn't determine version, set it with --version=<version>" if version.empty?
+
+    version
   end
 
   def detect_name(path, version)
@@ -43,7 +43,7 @@ module Homebrew
     detected_name = basename[/(.*?)-?#{Regexp.escape(version)}/, 1] || basename
     canonical_name = Formulary.canonical_name(detected_name)
 
-    odie <<-EOS.undent if detected_name != canonical_name
+    odie <<~EOS if detected_name != canonical_name
       The detected name #{detected_name.inspect} exists in Homebrew as an alias
       of #{canonical_name.inspect}. Consider using the canonical name instead:
         brew diy --name=#{canonical_name}

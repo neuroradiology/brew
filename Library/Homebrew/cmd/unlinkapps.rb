@@ -1,5 +1,10 @@
 #:  * `unlinkapps` [`--local`] [`--dry-run`] [<formulae>]:
-#:    Remove symlinks created by `brew linkapps` from `/Applications`.
+#:    Remove symlinks created by `brew linkapps` from `/Applications` (deprecated).
+#:
+#:    Unfortunately `brew linkapps` cannot behave nicely with e.g. Spotlight using
+#:    either aliases or symlinks and Homebrew formulae do not build "proper" `.app`
+#:    bundles that can be relocated. Instead, please consider using `brew cask` and
+#:    migrate formulae using `.app`s to casks.
 #:
 #:    If no <formulae> are provided, all linked apps will be removed.
 #:
@@ -12,13 +17,19 @@
 require "cmd/linkapps"
 
 module Homebrew
+  module_function
+
   def unlinkapps
+    opoo <<~EOS
+      `brew unlinkapps` has been deprecated and will eventually be removed!
+
+      Unfortunately `brew linkapps` cannot behave nicely with e.g. Spotlight using either aliases or symlinks and Homebrew formulae do not build "proper" `.app` bundles that can be relocated. Instead, please consider using `brew cask` and migrate formulae using `.app`s to casks.
+    EOS
+
     target_dir = linkapps_target(local: ARGV.include?("--local"))
 
     unlinkapps_from_dir(target_dir, dry_run: ARGV.dry_run?)
   end
-
-  private
 
   def unlinkapps_prune(opts = {})
     opts = opts.merge(prune: true)
@@ -54,7 +65,7 @@ module Homebrew
       puts "No apps unlinked from #{target_dir}" if ARGV.verbose?
     else
       n = ObserverPathnameExtension.total
-      puts "Unlinked #{n} app#{plural(n)} from #{target_dir}"
+      puts "Unlinked #{Formatter.pluralize(n, "app")} from #{target_dir}"
     end
   end
 
@@ -66,7 +77,7 @@ module Homebrew
   def unlinkapps_unlink?(target_app, opts = {})
     # Skip non-symlinks and symlinks that don't point into the Homebrew prefix.
     app = target_app.readlink.to_s if target_app.symlink?
-    return false unless app && app.start_with?(*UNLINKAPPS_PREFIXES)
+    return false unless app&.start_with?(*UNLINKAPPS_PREFIXES)
 
     if opts.fetch(:prune, false)
       !File.exist?(app) # Remove only broken symlinks in prune mode.

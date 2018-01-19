@@ -1,53 +1,73 @@
-require "hbc/artifact/base"
+require "hbc/artifact/abstract_artifact"
 
-class Hbc::Artifact::Pkg < Hbc::Artifact::Base
-  attr_reader :pkg_relative_path
+require "hbc/utils/hash_validator"
 
-  def self.artifact_dsl_key
-    :pkg
-  end
+require "vendor/plist/plist"
 
-  def load_pkg_description(pkg_description)
-    @pkg_relative_path = pkg_description.shift
-    @pkg_install_opts = pkg_description.shift
-    begin
-      if @pkg_install_opts.respond_to?(:keys)
-        @pkg_install_opts.assert_valid_keys(:allow_untrusted)
-      elsif @pkg_install_opts
-        raise
+module Hbc
+  module Artifact
+    class Pkg < AbstractArtifact
+      attr_reader :pkg_relative_path
+
+      def self.from_args(cask, path, **stanza_options)
+        stanza_options.extend(HashValidator).assert_valid_keys(
+          :allow_untrusted, :choices
+        )
+        new(cask, path, **stanza_options)
       end
-      raise if pkg_description.nil?
-    rescue StandardError
-      raise Hbc::CaskInvalidError.new(@cask, "Bad pkg stanza")
+
+      attr_reader :path, :stanza_options
+
+      def initialize(cask, path, **stanza_options)
+        super(cask)
+        @path = cask.staged_path.join(path)
+        @stanza_options = stanza_options
+      end
+
+      def summarize
+        path.relative_path_from(cask.staged_path).to_s
+      end
+
+      def install_phase(**options)
+        run_installer(**options)
+      end
+
+      private
+
+      def run_installer(command: nil, verbose: false, **_options)
+        ohai "Running installer for #{cask}; your password may be necessary."
+        ohai "Package installers may write to any location; options such as --appdir are ignored."
+        unless path.exist?
+          raise CaskError, "pkg source file not found: '#{path.relative_path_from(cask.staged_path)}'"
+        end
+        args = [
+          "-pkg",    path,
+          "-target", "/"
+        ]
+        args << "-verboseR" if verbose
+        if stanza_options.fetch(:allow_untrusted, false)
+          args << "-allowUntrusted"
+        end
+        with_choices_file do |choices_path|
+          args << "-applyChoiceChangesXML" << choices_path if choices_path
+          command.run!("/usr/sbin/installer", sudo: true, args: args, print_stdout: true)
+        end
+      end
+
+      def with_choices_file
+        choices = stanza_options.fetch(:choices, {})
+        return yield nil if choices.empty?
+
+        Tempfile.open(["choices", ".xml"]) do |file|
+          begin
+            file.write Plist::Emit.dump(choices)
+            file.close
+            yield file.path
+          ensure
+            file.unlink
+          end
+        end
+      end
     end
-  end
-
-  def pkg_install_opts(opt)
-    @pkg_install_opts[opt] if @pkg_install_opts.respond_to?(:keys)
-  end
-
-  def install_phase
-    @cask.artifacts[:pkg].each { |pkg_description| run_installer(pkg_description) }
-  end
-
-  def uninstall_phase
-    # Do nothing. Must be handled explicitly by a separate :uninstall stanza.
-  end
-
-  def run_installer(pkg_description)
-    load_pkg_description pkg_description
-    ohai "Running installer for #{@cask}; your password may be necessary."
-    ohai "Package installers may write to any location; options such as --appdir are ignored."
-    source = @cask.staged_path.join(pkg_relative_path)
-    unless source.exist?
-      raise Hbc::CaskError, "pkg source file not found: '#{source}'"
-    end
-    args = [
-             "-pkg",    source,
-             "-target", "/"
-           ]
-    args << "-verboseR" if Hbc.verbose
-    args << "-allowUntrusted" if pkg_install_opts :allow_untrusted
-    @command.run!("/usr/sbin/installer", sudo: true, args: args, print_stdout: true)
   end
 end

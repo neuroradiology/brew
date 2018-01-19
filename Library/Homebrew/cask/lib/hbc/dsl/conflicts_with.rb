@@ -1,30 +1,29 @@
-class Hbc::DSL::ConflictsWith
-  VALID_KEYS = Set.new [
-                         :formula,
-                         :cask,
-                         :macos,
-                         :arch,
-                         :x11,
-                         :java,
-                       ]
+module Hbc
+  class DSL
+    class ConflictsWith
+      VALID_KEYS = Set.new [
+        :formula,
+        :cask,
+        :macos,
+        :arch,
+        :x11,
+        :java,
+      ]
 
-  attr_accessor(*VALID_KEYS)
-  attr_accessor :pairs
+      attr_reader *VALID_KEYS
 
-  def initialize(pairs = {})
-    @pairs = pairs
-    pairs.each do |key, value|
-      raise "invalid conflicts_with key: '#{key.inspect}'" unless VALID_KEYS.include?(key)
-      writer_method = "#{key}=".to_sym
-      send(writer_method, value)
+      def initialize(pairs = {})
+        @pairs = pairs
+
+        VALID_KEYS.each do |key|
+          instance_variable_set("@#{key}", Set.new)
+        end
+
+        pairs.each do |key, value|
+          raise "invalid conflicts_with key: '#{key.inspect}'" unless VALID_KEYS.include?(key)
+          instance_variable_set("@#{key}", instance_variable_get("@#{key}").merge([*value]))
+        end
+      end
     end
-  end
-
-  def to_yaml
-    @pairs.to_yaml
-  end
-
-  def to_s
-    @pairs.inspect
   end
 end

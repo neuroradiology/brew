@@ -1,18 +1,31 @@
-class Hbc::CLI::Edit < Hbc::CLI::Base
-  def self.run(*args)
-    cask_tokens = cask_tokens_from(args)
-    raise Hbc::CaskUnspecifiedError if cask_tokens.empty?
-    # only respects the first argument
-    cask_token = cask_tokens.first.sub(%r{\.rb$}i, "")
-    cask_path = Hbc.path(cask_token)
-    odebug "Opening editor for Cask #{cask_token}"
-    unless cask_path.exist?
-      raise Hbc::CaskUnavailableError, %Q{#{cask_token}, run "brew cask create #{cask_token}" to create a new Cask}
-    end
-    exec_editor cask_path
-  end
+module Hbc
+  class CLI
+    class Edit < AbstractCommand
+      def initialize(*)
+        super
+        raise CaskUnspecifiedError if args.empty?
+        raise ArgumentError, "Only one Cask can be edited at a time." if args.count > 1
+      end
 
-  def self.help
-    "edits the given Cask"
+      def run
+        exec_editor cask_path
+      rescue CaskUnavailableError => e
+        reason = e.reason.empty? ? "" : "#{e.reason} "
+        reason.concat("Run #{Formatter.identifier("brew cask create #{e.token}")} to create a new Cask.")
+        raise e.class.new(e.token, reason)
+      end
+
+      def cask_path
+        casks.first.sourcefile_path
+      rescue CaskInvalidError
+        path = CaskLoader.path(args.first)
+        return path if path.file?
+        raise
+      end
+
+      def self.help
+        "edits the given Cask"
+      end
+    end
   end
 end

@@ -1,86 +1,66 @@
-class Hbc::CLI::List < Hbc::CLI::Base
-  def self.run(*arguments)
-    @options = {}
-    @options[:one] = true if arguments.delete("-1")
-    @options[:versions] = true if arguments.delete("--versions")
+module Hbc
+  class CLI
+    class List < AbstractCommand
+      option "-1", :one, false
+      option "--versions", :versions, false
+      option "--full-name", :full_name, false
 
-    if arguments.delete("-l")
-      @options[:one] = true
-      opoo "Option -l is obsolete! Implying option -1."
-    end
+      option "-l", (lambda do |*|
+        one = true # rubocop:disable Lint/UselessAssignment
+        opoo "Option -l is obsolete! Implying option -1."
+      end)
 
-    retval = arguments.any? ? list(*arguments) : list_installed
-    # retval is ternary: true/false/nil
-    if retval.nil? && !arguments.any?
-      opoo "nothing to list" # special case: avoid exit code
-    elsif retval.nil?
-      raise Hbc::CaskError, "nothing to list"
-    elsif !retval
-      raise Hbc::CaskError, "listing incomplete"
-    end
-  end
+      def run
+        args.any? ? list : list_installed
+      end
 
-  def self.list(*cask_tokens)
-    count = 0
+      def list
+        casks.each do |cask|
+          raise CaskNotInstalledError, cask unless cask.installed?
 
-    cask_tokens.each do |cask_token|
-      odebug "Listing files for Cask #{cask_token}"
-      begin
-        cask = Hbc.load(cask_token)
-
-        if cask.installed?
-          if @options[:one]
+          if one?
             puts cask.token
-          elsif @options[:versions]
-            puts format_versioned(cask)
+          elsif versions?
+            puts self.class.format_versioned(cask)
           else
-            installed_caskfile = cask.metadata_master_container_path.join(*cask.timestamped_versions.last, "Casks", "#{cask_token}.rb")
-            cask = Hbc.load(installed_caskfile)
-            list_artifacts(cask)
+            cask = CaskLoader.load(cask.installed_caskfile)
+            self.class.list_artifacts(cask)
           end
-
-          count += 1
-        else
-          opoo "#{cask} is not installed"
         end
-      rescue Hbc::CaskUnavailableError => e
-        onoe e
+      end
+
+      def self.list_artifacts(cask)
+        cask.artifacts.group_by(&:class).each do |klass, artifacts|
+          next unless klass.respond_to?(:english_description)
+          ohai klass.english_description, artifacts.map(&:summarize_installed)
+        end
+      end
+
+      def list_installed
+        installed_casks = Hbc.installed
+
+        if one?
+          puts installed_casks.map(&:to_s)
+        elsif versions?
+          puts installed_casks.map(&self.class.method(:format_versioned))
+        elsif full_name?
+          puts installed_casks.map(&:full_name).sort &tap_and_name_comparison
+        elsif !installed_casks.empty?
+          puts Formatter.columns(installed_casks.map(&:to_s))
+        end
+      end
+
+      def self.format_versioned(cask)
+        cask.to_s.concat(cask.versions.map(&:to_s).join(" ").prepend(" "))
+      end
+
+      def self.help
+        "with no args, lists installed Casks; given installed Casks, lists staged files"
+      end
+
+      def self.needs_init?
+        true
       end
     end
-
-    count == 0 ? nil : count == cask_tokens.length
-  end
-
-  def self.list_artifacts(cask)
-    Hbc::Artifact.for_cask(cask).each do |artifact|
-      summary = artifact.new(cask).summary
-      ohai summary[:english_description], summary[:contents] unless summary.empty?
-    end
-  end
-
-  def self.list_installed
-    installed_casks = Hbc.installed
-
-    if @options[:one]
-      puts installed_casks.map(&:to_s)
-    elsif @options[:versions]
-      puts installed_casks.map(&method(:format_versioned))
-    else
-      puts_columns installed_casks.map(&:to_s)
-    end
-
-    installed_casks.empty? ? nil : true
-  end
-
-  def self.format_versioned(cask)
-    cask.to_s.concat(cask.versions.map(&:to_s).join(" ").prepend(" "))
-  end
-
-  def self.help
-    "with no args, lists installed Casks; given installed Casks, lists staged files"
-  end
-
-  def self.needs_init?
-    true
   end
 end

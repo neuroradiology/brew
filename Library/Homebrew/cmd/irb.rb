@@ -12,6 +12,7 @@ class Symbol
     Formulary.factory(to_s, *args)
   end
 end
+
 class String
   def f(*args)
     Formulary.factory(self, *args)
@@ -19,7 +20,12 @@ class String
 end
 
 module Homebrew
+  module_function
+
   def irb
+    $LOAD_PATH.unshift("#{HOMEBREW_LIBRARY_PATH}/cask/lib")
+    require "hbc"
+
     if ARGV.include? "--examples"
       puts "'v8'.f # => instance of the v8 formula"
       puts ":hub.f.installed?"

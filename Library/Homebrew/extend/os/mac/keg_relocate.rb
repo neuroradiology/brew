@@ -6,7 +6,9 @@ class Keg
 
         each_install_name_for(file) do |bad_name|
           # Don't fix absolute paths unless they are rooted in the build directory
-          next if bad_name.start_with?("/") && !bad_name.start_with?(HOMEBREW_TEMP.to_s)
+          next if bad_name.start_with?("/") &&
+                  !bad_name.start_with?(HOMEBREW_TEMP.to_s) &&
+                  !bad_name.start_with?(HOMEBREW_TEMP.realpath.to_s)
 
           new_name = fixed_name(file, bad_name)
           change_install_name(bad_name, new_name, file) unless new_name == bad_name
@@ -17,19 +19,19 @@ class Keg
     generic_fix_dynamic_linkage
   end
 
-  def relocate_dynamic_linkage(old_prefix, new_prefix, old_cellar, new_cellar)
+  def relocate_dynamic_linkage(relocation)
     mach_o_files.each do |file|
       file.ensure_writable do
         if file.dylib?
-          id = dylib_id_for(file).sub(old_prefix, new_prefix)
+          id = dylib_id_for(file).sub(relocation.old_prefix, relocation.new_prefix)
           change_dylib_id(id, file)
         end
 
         each_install_name_for(file) do |old_name|
-          if old_name.start_with? old_cellar
-            new_name = old_name.sub(old_cellar, new_cellar)
-          elsif old_name.start_with? old_prefix
-            new_name = old_name.sub(old_prefix, new_prefix)
+          if old_name.start_with? relocation.old_cellar
+            new_name = old_name.sub(relocation.old_cellar, relocation.new_cellar)
+          elsif old_name.start_with? relocation.old_prefix
+            new_name = old_name.sub(relocation.old_prefix, relocation.new_prefix)
           end
 
           change_install_name(old_name, new_name, file) if new_name
@@ -61,9 +63,9 @@ class Keg
   # expensive recursive search if possible.
   def fixed_name(file, bad_name)
     if bad_name.start_with? PREFIX_PLACEHOLDER
-      bad_name.sub(PREFIX_PLACEHOLDER, HOMEBREW_PREFIX.to_s)
+      bad_name.sub(PREFIX_PLACEHOLDER, HOMEBREW_PREFIX)
     elsif bad_name.start_with? CELLAR_PLACEHOLDER
-      bad_name.sub(CELLAR_PLACEHOLDER, HOMEBREW_CELLAR.to_s)
+      bad_name.sub(CELLAR_PLACEHOLDER, HOMEBREW_CELLAR)
     elsif (file.dylib? || file.mach_o_bundle?) && (file.parent + bad_name).exist?
       "@loader_path/#{bad_name}"
     elsif file.mach_o_executable? && (lib + bad_name).exist?
@@ -87,7 +89,7 @@ class Keg
     # the basename of the file itself.
     basename = File.basename(file.dylib_id)
     relative_dirname = file.dirname.relative_path_from(path)
-    opt_record.join(relative_dirname, basename).to_s
+    (opt_record/relative_dirname/basename).to_s
   end
 
   # Matches framework references like `XXX.framework/Versions/YYY/XXX` and
@@ -123,8 +125,14 @@ class Keg
     mach_o_files
   end
 
+  def recursive_fgrep_args
+    # Don't recurse into symlinks; the man page says this is the default, but
+    # it's wrong. -O is a BSD-grep-only option.
+    "-lrO"
+  end
+
   def self.file_linked_libraries(file, string)
-    # Check dynamic library linkage. Importantly, do not run otool on static
+    # Check dynamic library linkage. Importantly, do not perform for static
     # libraries, which will falsely report "linkage" to themselves.
     if file.mach_o_executable? || file.dylib? || file.mach_o_bundle?
       file.dynamically_linked_libraries.select { |lib| lib.include? string }

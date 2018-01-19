@@ -12,11 +12,13 @@ require "formula"
 require "options"
 
 module Homebrew
+  module_function
+
   def options
     if ARGV.include? "--all"
-      puts_options Formula.to_a
+      puts_options Formula.to_a.sort
     elsif ARGV.include? "--installed"
-      puts_options Formula.installed
+      puts_options Formula.installed.sort
     else
       raise FormulaUnspecifiedError if ARGV.named.empty?
       puts_options ARGV.formulae

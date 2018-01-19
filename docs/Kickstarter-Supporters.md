@@ -1,4 +1,5 @@
 # Kickstarter Supporters
+
 This file contains a list of the awesome people who gave £5 or more to
 [our Kickstarter](https://www.kickstarter.com/projects/homebrew/brew-test-bot).
 
@@ -172,7 +173,7 @@ These brilliant people supported our Kickstarter by giving us £15 or more:
 * [Nick Rogers](https://twitter.com/zikolas)
 * [Abe Estrada](https://abeestrada.com)
 * [Mattias Larsson](https://www.yahoo.com/)
-* [Dave  Ross](http://davidmichaelross.com)
+* [Dave Ross](http://davidmichaelross.com)
 * [Andrian Budantsov](http://andrian.io/)
 * [Jason Smith](https://twitter.com/waitingallday)
 * [Martin Coxall](https://twitter.com/grabcocque)
@@ -378,7 +379,7 @@ These wonderful people supported our Kickstarter by giving us £10 or more:
 * [Andrew Brown](http://pvalu.es)
 * [Bethany Sumner](http://www.bethanysumner.com/)
 * [Orta](http://orta.io)
-* [Michał Gołębiowski](https://mgol.eu)
+* [Michał Gołębiowski-Owczarek](https://github.com/mgol)
 * [Adam C. Foltzer](http://www.acfoltzer.net/)
 * [Steve Hiemstra](https://www.speg.com)
 * [Anton Sipos](http://www.softwarefuturism.com)

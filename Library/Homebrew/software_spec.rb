@@ -1,4 +1,3 @@
-require "forwardable"
 require "resource"
 require "checksum"
 require "version"
@@ -8,14 +7,14 @@ require "dependency_collector"
 require "utils/bottles"
 require "patch"
 require "compilers"
+require "os/mac/version"
 
 class SoftwareSpec
   extend Forwardable
 
   PREDEFINED_OPTIONS = {
-    :universal => Option.new("universal", "Build a universal binary"),
-    :cxx11     => Option.new("c++11", "Build using C++11 mode"),
-    "32-bit"   => Option.new("32-bit", "Build 32-bit only"),
+    universal: Option.new("universal", "Build a universal binary"),
+    cxx11:     Option.new("c++11",     "Build using C++11 mode"),
   }.freeze
 
   attr_reader :name, :full_name, :owner
@@ -52,8 +51,18 @@ class SoftwareSpec
     @owner = owner
     @resource.owner = self
     resources.each_value do |r|
-      r.owner     = self
-      r.version ||= (version.head? ? Version.create("HEAD") : version.dup)
+      r.owner = self
+      r.version ||= begin
+        if version.nil?
+          raise "#{full_name}: version missing for \"#{r.name}\" resource!"
+        end
+
+        if version.head?
+          Version.create("HEAD")
+        else
+          version.dup
+        end
+      end
     end
     patches.each { |p| p.owner = self }
   end
@@ -65,11 +74,12 @@ class SoftwareSpec
   end
 
   def bottle_unneeded?
-    !!@bottle_disable_reason && @bottle_disable_reason.unneeded?
+    return false unless @bottle_disable_reason
+    @bottle_disable_reason.unneeded?
   end
 
   def bottle_disabled?
-    !!@bottle_disable_reason
+    @bottle_disable_reason ? true : false
   end
 
   attr_reader :bottle_disable_reason
@@ -116,12 +126,11 @@ class SoftwareSpec
 
   def option(name, description = "")
     opt = PREDEFINED_OPTIONS.fetch(name) do
-      if Symbol === name
-        opoo "Passing arbitrary symbols to `option` is deprecated: #{name.inspect}"
-        puts "Symbols are reserved for future use, please pass a string instead"
+      if name.is_a?(Symbol)
+        odeprecated "passing arbitrary symbols (i.e. #{name.inspect}) to `option`"
         name = name.to_s
       end
-      unless String === name
+      unless name.is_a?(String)
         raise ArgumentError, "option name must be string or symbol; got a #{name.class}: #{name}"
       end
       raise ArgumentError, "option name is required" if name.empty?
@@ -161,8 +170,31 @@ class SoftwareSpec
     dependency_collector.deps
   end
 
+  def recursive_dependencies
+    deps_f = []
+    recursive_dependencies = deps.map do |dep|
+      begin
+        deps_f << dep.to_formula
+        dep
+      rescue TapFormulaUnavailableError
+        # Don't complain about missing cross-tap dependencies
+        next
+      end
+    end.compact.uniq
+    deps_f.compact.each do |f|
+      f.recursive_dependencies.each do |dep|
+        recursive_dependencies << dep unless recursive_dependencies.include?(dep)
+      end
+    end
+    recursive_dependencies
+  end
+
   def requirements
     dependency_collector.requirements
+  end
+
+  def recursive_requirements
+    Requirement.expand(self)
   end
 
   def patch(strip = :p1, src = nil, &block)
@@ -172,6 +204,7 @@ class SoftwareSpec
   end
 
   def fails_with(compiler, &block)
+    odeprecated "fails_with :llvm" if compiler == :llvm
     compiler_failures << CompilerFailure.create(compiler, &block)
   end
 
@@ -220,21 +253,21 @@ class Bottle
     def initialize(name, version, tag, rebuild)
       @name = name
       @version = version
-      @tag = tag
+      @tag = tag.to_s.gsub(/_or_later$/, "")
       @rebuild = rebuild
     end
 
     def to_s
       prefix + suffix
     end
-    alias_method :to_str, :to_s
+    alias to_str to_s
 
     def prefix
       "#{name}-#{version}.#{tag}"
     end
 
     def suffix
-      s = rebuild > 0 ? ".#{rebuild}" : ""
+      s = rebuild.positive? ? ".#{rebuild}" : ""
       ".bottle#{s}.tar.gz"
     end
   end
@@ -318,7 +351,7 @@ class BottleSpecification
   end
 
   def tag?(tag)
-    !!checksum_for(tag)
+    checksum_for(tag) ? true : false
   end
 
   # Checksum methods in the DSL's bottle block optionally take
@@ -335,20 +368,19 @@ class BottleSpecification
   end
 
   def checksums
-    checksums = {}
-    os_versions = collector.keys
-    os_versions.map! do |macos|
+    tags = collector.keys.sort_by do |tag|
+      # Sort non-MacOS tags below MacOS tags.
       begin
-        MacOS::Version.from_symbol macos
-      rescue
-        nil
+        OS::Mac::Version.from_symbol tag
+      rescue ArgumentError
+        "0.#{tag}"
       end
-    end.compact!
-    os_versions.sort.reverse_each do |os_version|
-      macos = os_version.to_sym
-      checksum = collector[macos]
+    end
+    checksums = {}
+    tags.reverse_each do |tag|
+      checksum = collector[tag]
       checksums[checksum.hash_type] ||= []
-      checksums[checksum.hash_type] << { checksum => macos }
+      checksums[checksum.hash_type] << { checksum => tag }
     end
     checksums
   end

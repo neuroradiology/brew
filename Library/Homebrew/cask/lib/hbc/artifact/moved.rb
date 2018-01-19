@@ -1,88 +1,89 @@
 require "hbc/artifact/relocated"
 
-class Hbc::Artifact::Moved < Hbc::Artifact::Relocated
-  def self.english_description
-    "#{artifact_english_name}s"
-  end
+module Hbc
+  module Artifact
+    class Moved < Relocated
+      def self.english_description
+        "#{english_name}s"
+      end
 
-  def install_phase
-    each_artifact do |artifact|
-      load_specification(artifact)
-      next unless preflight_checks
-      delete if Hbc::Utils.path_occupied?(target) && force
-      move
-    end
-  end
+      def install_phase(**options)
+        move(**options)
+      end
 
-  def uninstall_phase
-    each_artifact do |artifact|
-      load_specification(artifact)
-      next unless File.exist?(target)
-      delete
-    end
-  end
+      def uninstall_phase(**options)
+        move_back(**options)
+      end
 
-  private
+      def summarize_installed
+        if target.exist?
+          "#{printable_target} (#{target.abv})"
+        else
+          Formatter.error(printable_target, label: "Missing #{self.class.english_name}")
+        end
+      end
 
-  def each_artifact
-    # the sort is for predictability between Ruby versions
-    @cask.artifacts[self.class.artifact_dsl_key].sort.each do |artifact|
-      yield artifact
-    end
-  end
+      private
 
-  def move
-    ohai "Moving #{self.class.artifact_english_name} '#{source.basename}' to '#{target}'"
-    target.dirname.mkpath
-    FileUtils.move(source, target)
-    add_altname_metadata target, source.basename.to_s
-  end
+      def move(force: false, command: nil, **options)
+        if Utils.path_occupied?(target)
+          message = "It seems there is already #{self.class.english_article} #{self.class.english_name} at '#{target}'"
+          raise CaskError, "#{message}." unless force
+          opoo "#{message}; overwriting."
+          delete(target, force: force, command: command, **options)
+        end
 
-  def preflight_checks
-    if Hbc::Utils.path_occupied?(target)
-      if force
-        ohai(warning_target_exists { |s| s << "overwriting." })
-      else
-        ohai(warning_target_exists { |s| s << "not moving." })
-        return false
+        unless source.exist?
+          raise CaskError, "It seems the #{self.class.english_name} source '#{source}' is not there."
+        end
+
+        ohai "Moving #{self.class.english_name} '#{source.basename}' to '#{target}'."
+        target.dirname.mkpath
+
+        if target.parent.writable?
+          FileUtils.move(source, target)
+        else
+          command.run("/bin/mv", args: [source, target], sudo: true)
+        end
+
+        add_altname_metadata(target, source.basename, command: command)
+      end
+
+      def move_back(skip: false, force: false, command: nil, **options)
+        if Utils.path_occupied?(source)
+          message = "It seems there is already #{self.class.english_article} #{self.class.english_name} at '#{source}'"
+          raise CaskError, "#{message}." unless force
+          opoo "#{message}; overwriting."
+          delete(source, force: force, command: command, **options)
+        end
+
+        unless target.exist?
+          return if skip
+          raise CaskError, "It seems the #{self.class.english_name} source '#{target}' is not there."
+        end
+
+        ohai "Moving #{self.class.english_name} '#{target.basename}' back to '#{source}'."
+        source.dirname.mkpath
+
+        if target.parent.writable?
+          FileUtils.move(target, source)
+        else
+          command.run("/bin/mv", args: [target, source], sudo: true)
+        end
+      end
+
+      def delete(target, force: false, command: nil, **_)
+        ohai "Removing #{self.class.english_name} '#{target}'."
+        raise CaskError, "Cannot remove undeletable #{self.class.english_name}." if MacOS.undeletable?(target)
+
+        return unless Utils.path_occupied?(target)
+
+        if target.parent.writable? && !force
+          target.rmtree
+        else
+          Utils.gain_permissions_remove(target, command: command)
+        end
       end
     end
-    unless source.exist?
-      message = "It seems the #{self.class.artifact_english_name} source is not there: '#{source}'"
-      raise Hbc::CaskError, message
-    end
-    true
-  end
-
-  def warning_target_exists
-    message_parts = [
-                      "It seems there is already #{self.class.artifact_english_article} #{self.class.artifact_english_name} at '#{target}'",
-                    ]
-    yield(message_parts) if block_given?
-    message_parts.join("; ")
-  end
-
-  def delete
-    ohai "Removing #{self.class.artifact_english_name}: '#{target}'"
-    if MacOS.undeletable?(target)
-      raise Hbc::CaskError, "Cannot remove undeletable #{self.class.artifact_english_name}"
-    elsif force
-      Hbc::Utils.gain_permissions_remove(target, command: @command)
-    else
-      target.rmtree
-    end
-  end
-
-  def summarize_artifact(artifact_spec)
-    load_specification artifact_spec
-
-    if target.exist?
-      target_abv = " (#{target.abv})"
-    else
-      warning = "Missing #{self.class.artifact_english_name}"
-      warning = "#{Tty.red}#{warning}#{Tty.reset}: "
-    end
-
-    "#{warning}#{printable_target}#{target_abv}"
   end
 end

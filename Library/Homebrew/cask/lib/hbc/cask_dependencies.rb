@@ -1,33 +1,36 @@
+require "delegate"
+
 require "hbc/topological_hash"
 
-class Hbc::CaskDependencies
-  attr_reader :cask, :graph, :sorted
+module Hbc
+  class CaskDependencies < DelegateClass(Array)
+    attr_reader :cask, :graph
 
-  def initialize(cask)
-    @cask = cask
-    @graph = graph_dependencies
-    @sorted = sort
-  end
+    def initialize(cask)
+      @cask = cask
+      @graph = graph_dependencies
+      super(sort)
+    end
 
-  def graph_dependencies
-    deps_in = ->(csk) { csk.depends_on ? csk.depends_on.cask || [] : [] }
-    walk = lambda { |acc, deps|
+    private
+
+    def graph_dependencies(cask = self.cask, acc = TopologicalHash.new)
+      return acc if acc.key?(cask)
+      deps = cask.depends_on.cask.map(&CaskLoader.public_method(:load))
+      acc[cask] = deps
       deps.each do |dep|
-        next if acc.key?(dep)
-        succs = deps_in.call Hbc.load(dep)
-        acc[dep] = succs
-        walk.call(acc, succs)
+        graph_dependencies(dep, acc)
       end
       acc
-    }
+    end
 
-    graphed = walk.call({}, @cask.depends_on.cask)
-    Hbc::TopologicalHash[graphed]
-  end
-
-  def sort
-    @graph.tsort
-  rescue TSort::Cyclic
-    raise Hbc::CaskCyclicCaskDependencyError, @cask.token
+    def sort
+      raise CaskSelfReferencingDependencyError, cask.token if graph[cask].include?(cask)
+      graph.tsort - [cask]
+    rescue TSort::Cyclic
+      strongly_connected_components = graph.strongly_connected_components.sort_by(&:count)
+      cyclic_dependencies = strongly_connected_components.last - [cask]
+      raise CaskCyclicDependencyError.new(cask.token, cyclic_dependencies.join(", "))
+    end
   end
 end

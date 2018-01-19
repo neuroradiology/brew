@@ -4,8 +4,13 @@
 require "sandbox"
 
 module Homebrew
+  module_function
+
   def postinstall
-    ARGV.resolved_formulae.each { |f| run_post_install(f) if f.post_install_defined? }
+    ARGV.resolved_formulae.each do |f|
+      ohai "Postinstalling #{f}"
+      run_post_install(f)
+    end
   end
 
   def run_post_install(formula)
@@ -24,8 +29,6 @@ module Homebrew
       args << "--devel"
     end
 
-    Sandbox.print_sandbox_message if Sandbox.formula?(formula)
-
     Utils.safe_fork do
       if Sandbox.formula?(formula)
         sandbox = Sandbox.new
@@ -33,10 +36,12 @@ module Homebrew
         sandbox.record_log(formula.logs/"postinstall.sandbox.log")
         sandbox.allow_write_temp_and_cache
         sandbox.allow_write_log(formula)
-        sandbox.allow_write_cellar(formula)
         sandbox.allow_write_xcode
-        sandbox.allow_write_path HOMEBREW_PREFIX
-        sandbox.deny_write_homebrew_library
+        sandbox.deny_write_homebrew_repository
+        sandbox.allow_write_cellar(formula)
+        Keg::TOP_LEVEL_DIRECTORIES.each do |dir|
+          sandbox.allow_write_path "#{HOMEBREW_PREFIX}/#{dir}"
+        end
         sandbox.exec(*args)
       else
         exec(*args)

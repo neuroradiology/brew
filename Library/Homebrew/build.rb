@@ -31,9 +31,8 @@ class Build
   def post_superenv_hacks
     # Only allow Homebrew-approved directories into the PATH, unless
     # a formula opts-in to allowing the user's path.
-    if formula.env.userpaths? || reqs.any? { |rq| rq.env.userpaths? }
-      ENV.userpaths!
-    end
+    return unless formula.env.userpaths? || reqs.any? { |rq| rq.env.userpaths? }
+    ENV.userpaths!
   end
 
   def effective_build_options_for(dependent)
@@ -48,9 +47,6 @@ class Build
       if (req.optional? || req.recommended?) && build.without?(req)
         Requirement.prune
       elsif req.build? && dependent != formula
-        Requirement.prune
-      elsif req.satisfied? && req.default_formula? && (dep = req.to_dependency).installed?
-        deps << dep
         Requirement.prune
       end
     end
@@ -103,51 +99,56 @@ class Build
       end
     end
 
-    old_tmpdir = ENV["TMPDIR"]
-    old_temp = ENV["TEMP"]
-    old_tmp = ENV["TMP"]
-    ENV["TMPDIR"] = ENV["TEMP"] = ENV["TMP"] = HOMEBREW_TEMP
+    new_env = {
+      "TMPDIR" => HOMEBREW_TEMP,
+      "TEMP" => HOMEBREW_TEMP,
+      "TMP" => HOMEBREW_TEMP,
+    }
 
-    formula.extend(Debrew::Formula) if ARGV.debug?
+    with_env(new_env) do
+      formula.extend(Debrew::Formula) if ARGV.debug?
 
-    formula.brew do |_formula, staging|
-      staging.retain! if ARGV.keep_tmp?
-      formula.patch
+      formula.brew do |_formula, staging|
+        # For head builds, HOMEBREW_FORMULA_PREFIX should include the commit,
+        # which is not known until after the formula has been staged.
+        ENV["HOMEBREW_FORMULA_PREFIX"] = formula.prefix
 
-      if ARGV.git?
-        system "git", "init"
-        system "git", "add", "-A"
-      end
-      if ARGV.interactive?
-        ohai "Entering interactive mode"
-        puts "Type `exit' to return and finalize the installation"
-        puts "Install to this prefix: #{formula.prefix}"
+        staging.retain! if ARGV.keep_tmp?
+        formula.patch
 
         if ARGV.git?
-          puts "This directory is now a git repo. Make your changes and then use:"
-          puts "  git diff | pbcopy"
-          puts "to copy the diff to the clipboard."
+          system "git", "init"
+          system "git", "add", "-A"
         end
+        if ARGV.interactive?
+          ohai "Entering interactive mode"
+          puts "Type `exit' to return and finalize the installation"
+          puts "Install to this prefix: #{formula.prefix}"
 
-        interactive_shell(formula)
-      else
-        formula.prefix.mkpath
+          if ARGV.git?
+            puts "This directory is now a git repo. Make your changes and then use:"
+            puts "  git diff | pbcopy"
+            puts "to copy the diff to the clipboard."
+          end
 
-        formula.install
+          interactive_shell(formula)
+        else
+          formula.prefix.mkpath
 
-        stdlibs = detect_stdlibs(ENV.compiler)
-        tab = Tab.create(formula, ENV.compiler, stdlibs.first)
-        tab.write
+          (formula.logs/"00.options.out").write \
+            "#{formula.full_name} #{formula.build.used_options.sort.join(" ")}".strip
+          formula.install
 
-        # Find and link metafiles
-        formula.prefix.install_metafiles formula.buildpath
-        formula.prefix.install_metafiles formula.libexec if formula.libexec.exist?
+          stdlibs = detect_stdlibs(ENV.compiler)
+          tab = Tab.create(formula, ENV.compiler, stdlibs.first)
+          tab.write
+
+          # Find and link metafiles
+          formula.prefix.install_metafiles formula.buildpath
+          formula.prefix.install_metafiles formula.libexec if formula.libexec.exist?
+        end
       end
     end
-  ensure
-    ENV["TMPDIR"] = old_tmpdir
-    ENV["TEMP"] = old_temp
-    ENV["TMP"] = old_tmp
   end
 
   def detect_stdlibs(compiler)
@@ -186,7 +187,7 @@ begin
   options = Options.create(ARGV.flags_only)
   build   = Build.new(formula, options)
   build.install
-rescue Exception => e
+rescue Exception => e # rubocop:disable Lint/RescueException
   Marshal.dump(e, error_pipe)
   error_pipe.close
   exit! 1

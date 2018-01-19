@@ -5,7 +5,7 @@ require "formula"
 class LinkageChecker
   attr_reader :keg, :formula
   attr_reader :brewed_dylibs, :system_dylibs, :broken_dylibs, :variable_dylibs
-  attr_reader :undeclared_deps, :reverse_links
+  attr_reader :undeclared_deps, :unnecessary_deps, :reverse_links
 
   def initialize(keg, formula = nil)
     @keg = keg
@@ -16,14 +16,18 @@ class LinkageChecker
     @variable_dylibs = Set.new
     @undeclared_deps = []
     @reverse_links = Hash.new { |h, k| h[k] = Set.new }
+    @unnecessary_deps = []
     check_dylibs
   end
 
   def check_dylibs
     @keg.find do |file|
       next if file.symlink? || file.directory?
-      next unless file.dylib? || file.mach_o_executable? || file.mach_o_bundle?
-      file.dynamically_linked_libraries.each do |dylib|
+      next unless file.dylib? || file.binary_executable? || file.mach_o_bundle?
+
+      # weakly loaded dylibs may not actually exist on disk, so skip them
+      # when checking for broken linkage
+      file.dynamically_linked_libraries(except: :LC_LOAD_WEAK_DYLIB).each do |dylib|
         @reverse_links[dylib] << file
         if dylib.start_with? "@"
           @variable_dylibs << dylib
@@ -33,6 +37,7 @@ class LinkageChecker
           rescue NotAKegError
             @system_dylibs << dylib
           rescue Errno::ENOENT
+            next if harmless_broken_link?(dylib)
             @broken_dylibs << dylib
           else
             tap = Tab.for_keg(owner).tap
@@ -47,7 +52,7 @@ class LinkageChecker
       end
     end
 
-    @undeclared_deps = check_undeclared_deps if formula
+    @undeclared_deps, @unnecessary_deps = check_undeclared_deps if formula
   end
 
   def check_undeclared_deps
@@ -57,12 +62,11 @@ class LinkageChecker
       formula.build.without?(dep)
     end
     declared_deps = formula.deps.reject { |dep| filter_out.call(dep) }.map(&:name)
-    declared_requirement_deps = formula.requirements.reject { |req| filter_out.call(req) }.map(&:default_formula).compact
-    declared_dep_names = (declared_deps + declared_requirement_deps).map { |dep| dep.split("/").last }
-    undeclared_deps = @brewed_dylibs.keys.select do |full_name|
+    declared_dep_names = declared_deps.map { |dep| dep.split("/").last }
+    undeclared_deps = @brewed_dylibs.keys.reject do |full_name|
       name = full_name.split("/").last
-      next false if name == formula.name
-      !declared_dep_names.include?(name)
+      next true if name == formula.name
+      declared_dep_names.include?(name)
     end
     undeclared_deps.sort do |a, b|
       if a.include?("/") && !b.include?("/")
@@ -73,6 +77,12 @@ class LinkageChecker
         a <=> b
       end
     end
+    unnecessary_deps = declared_dep_names.reject do |full_name|
+      name = full_name.split("/").last
+      next true if Formula[name].bin.directory?
+      @brewed_dylibs.keys.map { |x| x.split("/").last }.include?(name)
+    end
+    [undeclared_deps, unnecessary_deps]
   end
 
   def display_normal_output
@@ -80,7 +90,8 @@ class LinkageChecker
     display_items "Homebrew libraries", @brewed_dylibs
     display_items "Variable-referenced libraries", @variable_dylibs
     display_items "Missing libraries", @broken_dylibs
-    display_items "Possible undeclared dependencies", @undeclared_deps
+    display_items "Undeclared dependencies with linkage", @undeclared_deps
+    display_items "Dependencies with no linkage", @unnecessary_deps
   end
 
   def display_reverse_output
@@ -98,6 +109,7 @@ class LinkageChecker
 
   def display_test_output
     display_items "Missing libraries", @broken_dylibs
+    display_items "Possible unnecessary dependencies", @unnecessary_deps
     puts "No broken dylib links" if @broken_dylibs.empty?
   end
 
@@ -109,7 +121,22 @@ class LinkageChecker
     !@undeclared_deps.empty?
   end
 
+  def unnecessary_deps?
+    !@unnecessary_deps.empty?
+  end
+
   private
+
+  # Whether or not dylib is a harmless broken link, meaning that it's
+  # okay to skip (and not report) as broken.
+  def harmless_broken_link?(dylib)
+    # libgcc_s_* is referenced by programs that use the Java Service Wrapper,
+    # and is harmless on x86(_64) machines
+    [
+      "/usr/lib/libgcc_s_ppc64.1.dylib",
+      "/opt/local/lib/libgcc/libgcc_s.1.dylib",
+    ].include?(dylib)
+  end
 
   # Display a list of things.
   # Things may either be an array, or a hash of (label -> array)

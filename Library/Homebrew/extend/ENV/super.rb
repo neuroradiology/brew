@@ -16,9 +16,7 @@ module Superenv
 
   # @private
   attr_accessor :keg_only_deps, :deps
-
   attr_accessor :x11
-  alias_method :x11?, :x11
 
   def self.extended(base)
     base.keg_only_deps = []
@@ -26,8 +24,7 @@ module Superenv
   end
 
   # @private
-  def self.bin
-  end
+  def self.bin; end
 
   def reset
     super
@@ -64,9 +61,7 @@ module Superenv
     self["HOMEBREW_INCLUDE_PATHS"] = determine_include_paths
     self["HOMEBREW_LIBRARY_PATHS"] = determine_library_paths
     self["HOMEBREW_DEPENDENCIES"] = determine_dependencies
-    unless formula.nil?
-      self["HOMEBREW_FORMULA_PREFIX"] = formula.prefix
-    end
+    self["HOMEBREW_FORMULA_PREFIX"] = formula.prefix unless formula.nil?
 
     # The HOMEBREW_CCCFG ENV variable is used by the ENV/cc tool to control
     # compiler flag stripping. It consists of a string of characters which act
@@ -84,7 +79,7 @@ module Superenv
     # s - apply fix for sed's Unicode support
     # a - apply fix for apr-1-config path
   end
-  alias_method :generic_setup_build_environment, :setup_build_environment
+  alias generic_setup_build_environment setup_build_environment
 
   private
 
@@ -105,29 +100,28 @@ module Superenv
   end
 
   def determine_path
-    paths = [Superenv.bin]
+    path = PATH.new(Superenv.bin)
 
     # Formula dependencies can override standard tools.
-    paths += deps.map { |d| d.opt_bin.to_s }
-
-    paths += homebrew_extra_paths
-    paths += %w[/usr/bin /bin /usr/sbin /sbin]
+    path.append(deps.map(&:opt_bin))
+    path.append(homebrew_extra_paths)
+    path.append("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 
     # Homebrew's apple-gcc42 will be outside the PATH in superenv,
     # so xcrun may not be able to find it
-    case homebrew_cc
-    when "gcc-4.2"
-      begin
-        apple_gcc42 = Formulary.factory("apple-gcc42")
-      rescue FormulaUnavailableError
+    begin
+      case homebrew_cc
+      when "gcc-4.2"
+        path.append(Formulary.factory("apple-gcc42").opt_bin)
+      when GNU_GCC_REGEXP
+        path.append(gcc_version_formula($&).opt_bin)
       end
-      paths << apple_gcc42.opt_bin.to_s if apple_gcc42
-    when GNU_GCC_REGEXP
-      gcc_formula = gcc_version_formula($&)
-      paths << gcc_formula.opt_bin.to_s
+    rescue FormulaUnavailableError
+      # Don't fail and don't add these formulae to the path if they don't exist.
+      nil
     end
 
-    paths.to_path_s
+    path.existing
   end
 
   def homebrew_extra_pkg_config_paths
@@ -135,15 +129,16 @@ module Superenv
   end
 
   def determine_pkg_config_path
-    paths  = deps.map { |d| "#{d.opt_lib}/pkgconfig" }
-    paths += deps.map { |d| "#{d.opt_share}/pkgconfig" }
-    paths.to_path_s
+    PATH.new(
+      deps.map { |d| d.opt_lib/"pkgconfig" },
+      deps.map { |d| d.opt_share/"pkgconfig" },
+    ).existing
   end
 
   def determine_pkg_config_libdir
-    paths = %W[/usr/lib/pkgconfig]
-    paths += homebrew_extra_pkg_config_paths
-    paths.to_path_s
+    PATH.new(
+      homebrew_extra_pkg_config_paths,
+    ).existing
   end
 
   def homebrew_extra_aclocal_paths
@@ -151,10 +146,11 @@ module Superenv
   end
 
   def determine_aclocal_path
-    paths = keg_only_deps.map { |d| "#{d.opt_share}/aclocal" }
-    paths << "#{HOMEBREW_PREFIX}/share/aclocal"
-    paths += homebrew_extra_aclocal_paths
-    paths.to_path_s
+    PATH.new(
+      keg_only_deps.map { |d| d.opt_share/"aclocal" },
+      HOMEBREW_PREFIX/"share/aclocal",
+      homebrew_extra_aclocal_paths,
+    ).existing
   end
 
   def homebrew_extra_isystem_paths
@@ -162,13 +158,14 @@ module Superenv
   end
 
   def determine_isystem_paths
-    paths = ["#{HOMEBREW_PREFIX}/include"]
-    paths += homebrew_extra_isystem_paths
-    paths.to_path_s
+    PATH.new(
+      HOMEBREW_PREFIX/"include",
+      homebrew_extra_isystem_paths,
+    ).existing
   end
 
   def determine_include_paths
-    keg_only_deps.map { |d| d.opt_include.to_s }.to_path_s
+    PATH.new(keg_only_deps.map(&:opt_include)).existing
   end
 
   def homebrew_extra_library_paths
@@ -176,10 +173,11 @@ module Superenv
   end
 
   def determine_library_paths
-    paths = keg_only_deps.map { |d| d.opt_lib.to_s }
-    paths << "#{HOMEBREW_PREFIX}/lib"
-    paths += homebrew_extra_library_paths
-    paths.to_path_s
+    PATH.new(
+      keg_only_deps.map(&:opt_lib),
+      HOMEBREW_PREFIX/"lib",
+      homebrew_extra_library_paths,
+    ).existing
   end
 
   def determine_dependencies
@@ -187,9 +185,10 @@ module Superenv
   end
 
   def determine_cmake_prefix_path
-    paths = keg_only_deps.map { |d| d.opt_prefix.to_s }
-    paths << HOMEBREW_PREFIX.to_s
-    paths.to_path_s
+    PATH.new(
+      keg_only_deps.map(&:opt_prefix),
+      HOMEBREW_PREFIX.to_s,
+    ).existing
   end
 
   def homebrew_extra_cmake_include_paths
@@ -197,9 +196,7 @@ module Superenv
   end
 
   def determine_cmake_include_path
-    paths = []
-    paths += homebrew_extra_cmake_include_paths
-    paths.to_path_s
+    PATH.new(homebrew_extra_cmake_include_paths).existing
   end
 
   def homebrew_extra_cmake_library_paths
@@ -207,9 +204,7 @@ module Superenv
   end
 
   def determine_cmake_library_path
-    paths = []
-    paths += homebrew_extra_cmake_library_paths
-    paths.to_path_s
+    PATH.new(homebrew_extra_cmake_library_paths).existing
   end
 
   def homebrew_extra_cmake_frameworks_paths
@@ -217,9 +212,10 @@ module Superenv
   end
 
   def determine_cmake_frameworks_path
-    paths = deps.map { |d| d.opt_frameworks.to_s }
-    paths += homebrew_extra_cmake_frameworks_paths
-    paths.to_path_s
+    PATH.new(
+      deps.map(&:opt_frameworks),
+      homebrew_extra_cmake_frameworks_paths,
+    ).existing
   end
 
   def determine_make_jobs
@@ -265,11 +261,10 @@ module Superenv
 
     old
   end
-  alias_method :j1, :deparallelize
 
   def make_jobs
     self["MAKEFLAGS"] =~ /-\w*j(\d+)/
-    [$1.to_i, 1].max
+    [Regexp.last_match(1).to_i, 1].max
   end
 
   def universal_binary
@@ -278,12 +273,12 @@ module Superenv
     self["HOMEBREW_ARCHFLAGS"] = Hardware::CPU.universal_archs.as_arch_flags
 
     # GCC doesn't accept "-march" for a 32-bit CPU with "-arch x86_64"
-    if compiler != :clang && Hardware::CPU.is_32_bit?
-      self["HOMEBREW_OPTFLAGS"] = self["HOMEBREW_OPTFLAGS"].sub(
-        /-march=\S*/,
-        "-Xarch_#{Hardware::CPU.arch_32_bit} \\0"
-      )
-    end
+    return if compiler == :clang
+    return unless Hardware::CPU.is_32_bit?
+    self["HOMEBREW_OPTFLAGS"] = self["HOMEBREW_OPTFLAGS"].sub(
+      /-march=\S*/,
+      "-Xarch_#{Hardware::CPU.arch_32_bit} \\0",
+    )
   end
 
   def permit_arch_flags
@@ -328,32 +323,9 @@ module Superenv
     end
   end
 
-  def set_x11_env_if_installed
-  end
+  def set_x11_env_if_installed; end
 
-  # @private
-  def noop(*_args); end
-
-  # These methods are no longer necessary under superenv, but are needed to
-  # maintain an interface compatible with stdenv.
-  alias_method :fast, :noop
-  alias_method :O4, :noop
-  alias_method :Og, :noop
-  alias_method :libxml2, :noop
-  alias_method :set_cpu_flags, :noop
-
-  # These methods provide functionality that has not yet been ported to
-  # superenv.
-  alias_method :gcc_4_0_1, :noop
-  alias_method :minimal_optimization, :noop
-  alias_method :no_optimization, :noop
-  alias_method :enable_warnings, :noop
-end
-
-class Array
-  def to_path_s
-    map(&:to_s).uniq.select { |s| File.directory? s }.join(File::PATH_SEPARATOR).chuzzle
-  end
+  def set_cpu_flags(_, _ = "", _ = {}); end
 end
 
 require "extend/os/extend/ENV/super"

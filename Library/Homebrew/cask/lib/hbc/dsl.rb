@@ -1,6 +1,7 @@
 require "set"
+require "locale"
 
-class Hbc::DSL; end
+require "hbc/artifact"
 
 require "hbc/dsl/appcast"
 require "hbc/dsl/base"
@@ -9,8 +10,6 @@ require "hbc/dsl/conflicts_with"
 require "hbc/dsl/container"
 require "hbc/dsl/depends_on"
 require "hbc/dsl/gpg"
-require "hbc/dsl/installer"
-require "hbc/dsl/license"
 require "hbc/dsl/postflight"
 require "hbc/dsl/preflight"
 require "hbc/dsl/stanza_proxy"
@@ -18,266 +17,286 @@ require "hbc/dsl/uninstall_postflight"
 require "hbc/dsl/uninstall_preflight"
 require "hbc/dsl/version"
 
-class Hbc::DSL
-  ORDINARY_ARTIFACT_TYPES = [
-                              :app,
-                              :artifact,
-                              :audio_unit_plugin,
-                              :binary,
-                              :colorpicker,
-                              :font,
-                              :input_method,
-                              :internet_plugin,
-                              :pkg,
-                              :prefpane,
-                              :qlplugin,
-                              :screen_saver,
-                              :service,
-                              :stage_only,
-                              :suite,
-                              :vst_plugin,
-                              :vst3_plugin,
-                            ].freeze
+module Hbc
+  class DSL
+    ORDINARY_ARTIFACT_CLASSES = [
+      Artifact::Installer,
+      Artifact::App,
+      Artifact::Artifact,
+      Artifact::AudioUnitPlugin,
+      Artifact::Binary,
+      Artifact::Colorpicker,
+      Artifact::Dictionary,
+      Artifact::Font,
+      Artifact::InputMethod,
+      Artifact::InternetPlugin,
+      Artifact::Pkg,
+      Artifact::Prefpane,
+      Artifact::Qlplugin,
+      Artifact::ScreenSaver,
+      Artifact::Service,
+      Artifact::StageOnly,
+      Artifact::Suite,
+      Artifact::VstPlugin,
+      Artifact::Vst3Plugin,
+      Artifact::Uninstall,
+      Artifact::Zap,
+    ].freeze
 
-  ACTIVATABLE_ARTIFACT_TYPES = ([:installer, *ORDINARY_ARTIFACT_TYPES] - [:stage_only]).freeze
+    ACTIVATABLE_ARTIFACT_CLASSES = ORDINARY_ARTIFACT_CLASSES - [Artifact::StageOnly]
 
-  SPECIAL_ARTIFACT_TYPES = [
-                             :uninstall,
-                             :zap,
-                           ].freeze
+    ARTIFACT_BLOCK_CLASSES = [
+      Artifact::PreflightBlock,
+      Artifact::PostflightBlock,
+    ].freeze
 
-  ARTIFACT_BLOCK_TYPES = [
-                           :preflight,
-                           :postflight,
-                           :uninstall_preflight,
-                           :uninstall_postflight,
-                         ].freeze
+    DSL_METHODS = Set.new [
+      :accessibility_access,
+      :appcast,
+      :artifacts,
+      :auto_updates,
+      :caskroom_path,
+      :caveats,
+      :conflicts_with,
+      :container,
+      :depends_on,
+      :gpg,
+      :homepage,
+      :language,
+      :languages,
+      :name,
+      :sha256,
+      :staged_path,
+      :url,
+      :version,
+      :appdir,
+      *ORDINARY_ARTIFACT_CLASSES.map(&:dsl_key),
+      *ACTIVATABLE_ARTIFACT_CLASSES.map(&:dsl_key),
+      *ARTIFACT_BLOCK_CLASSES.flat_map { |klass| [klass.dsl_key, klass.uninstall_dsl_key] },
+    ].freeze
 
-  DSL_METHODS = Set.new [
-                          :accessibility_access,
-                          :appcast,
-                          :artifacts,
-                          :auto_updates,
-                          :caskroom_path,
-                          :caveats,
-                          :conflicts_with,
-                          :container,
-                          :depends_on,
-                          :gpg,
-                          :homepage,
-                          :license,
-                          :name,
-                          :sha256,
-                          :staged_path,
-                          :url,
-                          :version,
-                          :appdir,
-                          *ORDINARY_ARTIFACT_TYPES,
-                          *ACTIVATABLE_ARTIFACT_TYPES,
-                          *SPECIAL_ARTIFACT_TYPES,
-                          *ARTIFACT_BLOCK_TYPES,
-                        ].freeze
+    attr_reader :cask, :token
 
-  attr_reader :token
-  def initialize(token)
-    @token = token
-  end
-
-  def name(*args)
-    @name ||= []
-    return @name if args.empty?
-    @name.concat(args.flatten)
-  end
-
-  def assert_only_one_stanza_allowed(stanza, arg_given)
-    return unless instance_variable_defined?("@#{stanza}") && arg_given
-    raise Hbc::CaskInvalidError.new(token, "'#{stanza}' stanza may only appear once")
-  end
-
-  def homepage(homepage = nil)
-    assert_only_one_stanza_allowed :homepage, !homepage.nil?
-    @homepage ||= homepage
-  end
-
-  def url(*args, &block)
-    url_given = !args.empty? || block_given?
-    return @url unless url_given
-    assert_only_one_stanza_allowed :url, url_given
-    @url ||= begin
-      Hbc::URL.from(*args, &block)
-    rescue StandardError => e
-      raise Hbc::CaskInvalidError.new(token, "'url' stanza failed with: #{e}")
+    def initialize(cask)
+      @cask = cask
+      @token = cask.token
     end
-  end
 
-  def appcast(*args)
-    return @appcast if args.empty?
-    assert_only_one_stanza_allowed :appcast, !args.empty?
-    @appcast ||= begin
-      Hbc::DSL::Appcast.new(*args) unless args.empty?
-    rescue StandardError => e
-      raise Hbc::CaskInvalidError.new(token, e)
+    def name(*args)
+      @name ||= []
+      return @name if args.empty?
+      @name.concat(args.flatten)
     end
-  end
 
-  def gpg(*args)
-    return @gpg if args.empty?
-    assert_only_one_stanza_allowed :gpg, !args.empty?
-    @gpg ||= begin
-      Hbc::DSL::Gpg.new(*args) unless args.empty?
-    rescue StandardError => e
-      raise Hbc::CaskInvalidError.new(token, e)
-    end
-  end
+    def set_unique_stanza(stanza, should_return)
+      return instance_variable_get("@#{stanza}") if should_return
 
-  def container(*args)
-    return @container if args.empty?
-    # TODO: remove this constraint, and instead merge multiple container stanzas
-    assert_only_one_stanza_allowed :container, !args.empty?
-    @container ||= begin
-      Hbc::DSL::Container.new(*args) unless args.empty?
-    rescue StandardError => e
-      raise Hbc::CaskInvalidError.new(token, e)
-    end
-    # TODO: remove this backward-compatibility section after removing nested_container
-    if @container && @container.nested
-      artifacts[:nested_container] << @container.nested
-    end
-    @container
-  end
-
-  SYMBOLIC_VERSIONS = Set.new [
-                                :latest,
-                              ]
-
-  def version(arg = nil)
-    return @version if arg.nil?
-    assert_only_one_stanza_allowed :version, !arg.nil?
-    raise Hbc::CaskInvalidError.new(token, "invalid 'version' value: '#{arg.inspect}'") if !arg.is_a?(String) && !SYMBOLIC_VERSIONS.include?(arg)
-    @version ||= Hbc::DSL::Version.new(arg)
-  end
-
-  SYMBOLIC_SHA256S = Set.new [
-                               :no_check,
-                             ]
-
-  def sha256(arg = nil)
-    return @sha256 if arg.nil?
-    assert_only_one_stanza_allowed :sha256, !arg.nil?
-    raise Hbc::CaskInvalidError.new(token, "invalid 'sha256' value: '#{arg.inspect}'") if !arg.is_a?(String) && !SYMBOLIC_SHA256S.include?(arg)
-    @sha256 ||= arg
-  end
-
-  def license(arg = nil)
-    return @license if arg.nil?
-    assert_only_one_stanza_allowed :license, !arg.nil?
-    @license ||= begin
-      Hbc::DSL::License.new(arg) unless arg.nil?
-    rescue StandardError => e
-      raise Hbc::CaskInvalidError.new(token, e)
-    end
-  end
-
-  # depends_on uses a load method so that multiple stanzas can be merged
-  def depends_on(*args)
-    return @depends_on if args.empty?
-    @depends_on ||= Hbc::DSL::DependsOn.new
-    begin
-      @depends_on.load(*args) unless args.empty?
-    rescue RuntimeError => e
-      raise Hbc::CaskInvalidError.new(token, e)
-    end
-    @depends_on
-  end
-
-  def conflicts_with(*args)
-    return @conflicts_with if args.empty?
-    # TODO: remove this constraint, and instead merge multiple conflicts_with stanzas
-    assert_only_one_stanza_allowed :conflicts_with, !args.empty?
-    @conflicts_with ||= begin
-      Hbc::DSL::ConflictsWith.new(*args) unless args.empty?
-    rescue StandardError => e
-      raise Hbc::CaskInvalidError.new(token, e)
-    end
-  end
-
-  def artifacts
-    @artifacts ||= Hash.new { |hash, key| hash[key] = Set.new }
-  end
-
-  def caskroom_path
-    @caskroom_path ||= Hbc.caskroom.join(token)
-  end
-
-  def staged_path
-    return @staged_path if @staged_path
-    cask_version = version || :unknown
-    @staged_path = caskroom_path.join(cask_version.to_s)
-  end
-
-  def caveats(*string, &block)
-    @caveats ||= []
-    if block_given?
-      @caveats << Hbc::Caveats.new(block)
-    elsif string.any?
-      @caveats << string.map { |s| s.to_s.sub(%r{[\r\n \t]*\Z}, "\n\n") }
-    end
-    @caveats
-  end
-
-  def accessibility_access(accessibility_access = nil)
-    assert_only_one_stanza_allowed :accessibility_access, !accessibility_access.nil?
-    @accessibility_access ||= accessibility_access
-  end
-
-  def auto_updates(auto_updates = nil)
-    assert_only_one_stanza_allowed :auto_updates, !auto_updates.nil?
-    @auto_updates ||= auto_updates
-  end
-
-  ORDINARY_ARTIFACT_TYPES.each do |type|
-    define_method(type) do |*args|
-      if type == :stage_only && args != [true]
-        raise Hbc::CaskInvalidError.new(token, "'stage_only' takes a single argument: true")
+      if instance_variable_defined?("@#{stanza}")
+        raise CaskInvalidError.new(cask, "'#{stanza}' stanza may only appear once.")
       end
-      artifacts[type] << args
-      if artifacts.key?(:stage_only) && artifacts.keys.count > 1 &&
-         !(artifacts.keys & ACTIVATABLE_ARTIFACT_TYPES).empty?
-        raise Hbc::CaskInvalidError.new(token, "'stage_only' must be the only activatable artifact")
+
+      instance_variable_set("@#{stanza}", yield)
+    rescue CaskInvalidError
+      raise
+    rescue StandardError => e
+      raise CaskInvalidError.new(cask, "'#{stanza}' stanza failed with: #{e}")
+    end
+
+    def homepage(homepage = nil)
+      set_unique_stanza(:homepage, homepage.nil?) { homepage }
+    end
+
+    def language(*args, default: false, &block)
+      if args.empty?
+        language_eval
+      elsif block_given?
+        @language_blocks ||= {}
+        @language_blocks[args] = block
+
+        return unless default
+
+        unless @language_blocks.default.nil?
+          raise CaskInvalidError.new(cask, "Only one default language may be defined.")
+        end
+
+        @language_blocks.default = block
+      else
+        raise CaskInvalidError.new(cask, "No block given to language stanza.")
       end
     end
-  end
 
-  def installer(*args)
-    return artifacts[:installer] if args.empty?
-    artifacts[:installer] << Hbc::DSL::Installer.new(*args)
-    raise "'stage_only' must be the only activatable artifact" if artifacts.key?(:stage_only)
-  rescue StandardError => e
-    raise Hbc::CaskInvalidError.new(token, e)
-  end
+    def language_eval
+      return @language if instance_variable_defined?(:@language)
 
-  SPECIAL_ARTIFACT_TYPES.each do |type|
-    define_method(type) do |*args|
-      artifacts[type].merge(args)
+      return @language = nil if @language_blocks.nil? || @language_blocks.empty?
+
+      if @language_blocks.default.nil?
+        raise CaskInvalidError.new(cask, "No default language specified.")
+      end
+
+      MacOS.languages.map(&Locale.method(:parse)).each do |locale|
+        key = @language_blocks.keys.detect do |strings|
+          strings.any? { |string| locale.include?(string) }
+        end
+
+        next if key.nil?
+
+        return @language = @language_blocks[key].call
+      end
+
+      @language = @language_blocks.default.call
     end
-  end
 
-  ARTIFACT_BLOCK_TYPES.each do |type|
-    define_method(type) do |&block|
-      artifacts[type] << block
+    def languages
+      return [] if @language_blocks.nil?
+
+      @language_blocks.keys.flatten
     end
-  end
 
-  def method_missing(method, *)
-    Hbc::Utils.method_missing_message(method, token)
-    nil
-  end
+    def url(*args, &block)
+      set_unique_stanza(:url, args.empty? && !block_given?) do
+        begin
+          URL.from(*args, &block)
+        end
+      end
+    end
 
-  def appdir
-    self.class.appdir
-  end
+    def appcast(*args)
+      set_unique_stanza(:appcast, args.empty?) { DSL::Appcast.new(*args) }
+    end
 
-  def self.appdir
-    Hbc.appdir.sub(%r{\/$}, "")
+    def gpg(*args)
+      set_unique_stanza(:gpg, args.empty?) { DSL::Gpg.new(*args) }
+    end
+
+    def container(*args)
+      # TODO: remove this constraint, and instead merge multiple container stanzas
+      set_unique_stanza(:container, args.empty?) do
+        begin
+          DSL::Container.new(*args).tap do |container|
+            # TODO: remove this backward-compatibility section after removing nested_container
+            if container&.nested
+              artifacts.add(Artifact::NestedContainer.new(cask, container.nested))
+            end
+          end
+        end
+      end
+    end
+
+    def version(arg = nil)
+      set_unique_stanza(:version, arg.nil?) do
+        if !arg.is_a?(String) && arg != :latest
+          raise CaskInvalidError.new(cask, "invalid 'version' value: '#{arg.inspect}'")
+        end
+        DSL::Version.new(arg)
+      end
+    end
+
+    def sha256(arg = nil)
+      set_unique_stanza(:sha256, arg.nil?) do
+        if !arg.is_a?(String) && arg != :no_check
+          raise CaskInvalidError.new(cask, "invalid 'sha256' value: '#{arg.inspect}'")
+        end
+        arg
+      end
+    end
+
+    # depends_on uses a load method so that multiple stanzas can be merged
+    def depends_on(*args)
+      @depends_on ||= DSL::DependsOn.new
+      return @depends_on if args.empty?
+      begin
+        @depends_on.load(*args)
+      rescue RuntimeError => e
+        raise CaskInvalidError.new(cask, e)
+      end
+      @depends_on
+    end
+
+    def conflicts_with(*args)
+      # TODO: remove this constraint, and instead merge multiple conflicts_with stanzas
+      set_unique_stanza(:conflicts_with, args.empty?) { DSL::ConflictsWith.new(*args) }
+    end
+
+    def artifacts
+      @artifacts ||= SortedSet.new
+    end
+
+    def caskroom_path
+      @caskroom_path ||= Hbc.caskroom.join(token)
+    end
+
+    def staged_path
+      return @staged_path if @staged_path
+      cask_version = version || :unknown
+      @staged_path = caskroom_path.join(cask_version.to_s)
+    end
+
+    def caveats(*strings, &block)
+      @caveats ||= DSL::Caveats.new(cask)
+      if block_given?
+        @caveats.eval_caveats(&block)
+      elsif strings.any?
+        strings.each do |string|
+          @caveats.eval_caveats { string }
+        end
+      else
+        return @caveats.to_s
+      end
+      @caveats
+    end
+
+    def accessibility_access(accessibility_access = nil)
+      set_unique_stanza(:accessibility_access, accessibility_access.nil?) { accessibility_access }
+    end
+
+    def auto_updates(auto_updates = nil)
+      set_unique_stanza(:auto_updates, auto_updates.nil?) { auto_updates }
+    end
+
+    ORDINARY_ARTIFACT_CLASSES.each do |klass|
+      define_method(klass.dsl_key) do |*args|
+        begin
+          if [*artifacts.map(&:class), klass].include?(Artifact::StageOnly) && (artifacts.map(&:class) & ACTIVATABLE_ARTIFACT_CLASSES).any?
+            raise CaskInvalidError.new(cask, "'stage_only' must be the only activatable artifact.")
+          end
+
+          artifacts.add(klass.from_args(cask, *args))
+        rescue CaskInvalidError
+          raise
+        rescue StandardError => e
+          raise CaskInvalidError.new(cask, "invalid '#{klass.dsl_key}' stanza: #{e}")
+        end
+      end
+    end
+
+    ARTIFACT_BLOCK_CLASSES.each do |klass|
+      [klass.dsl_key, klass.uninstall_dsl_key].each do |dsl_key|
+        define_method(dsl_key) do |&block|
+          artifacts.add(klass.new(cask, dsl_key => block))
+        end
+      end
+    end
+
+    def method_missing(method, *)
+      if method
+        Utils.method_missing_message(method, token)
+        nil
+      else
+        super
+      end
+    end
+
+    def respond_to_missing?(*)
+      true
+    end
+
+    def appdir
+      self.class.appdir
+    end
+
+    def self.appdir
+      Hbc.appdir.sub(%r{\/$}, "")
+    end
   end
 end

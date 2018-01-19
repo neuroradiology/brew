@@ -1,17 +1,22 @@
-If Homebrew was updated on Aug 10-11th 2016 and `brew update` always says `Already up-to-date.` you need to run: `cd "$(brew --repo)" && git fetch && git reset --hard origin/master && brew update`.
+**Please note we will close your issue without comment if you delete, do not read or do not fill out the issue checklist below and provide ALL the requested information. If you repeatedly fail to use the issue template, we will block you from ever submitting issues to Homebrew again.**
 
-# Please follow the general troubleshooting steps first:
-
+# Please always follow these steps:
+- [ ] Confirmed this is a problem with running a `brew` command and not `brew install`ing or the post-install behaviour of one or more formulae? If it's a formulae-specific problem please file this issue at the relevant tap e.g. for Homebrew/homebrew-core https://github.com/Homebrew/homebrew-core/issues/new
 - [ ] Ran `brew update` and retried your prior step?
-- [ ] Ran `brew doctor`, fixed as many issues as possible and retried your prior step?
-- [ ] If you're seeing permission errors tried running `sudo chown -R $(whoami) $(brew --prefix)`?
+- [ ] Ran `brew doctor`, fixed all issues and retried your prior step?
+- [ ] Ran `brew config` and `brew doctor` and included their output with your issue?
 
-_You can erase any parts of this template not applicable to your Issue._
+To help us debug your issue please explain:
+- What you were trying to do (and why)
+- What happened (include command output)
+- What you expected to happen
+- Step-by-step reproduction instructions (by running `brew` commands)
 
-### Bug reports:
+# Features
+Please replace this section with:
+- a detailed description of your proposed feature
+- the motivation for the feature
+- how the feature would be relevant to at least 90% of Homebrew users
+- what alternatives to the feature you have considered
 
-Please replace this line with a brief summary of your issue.
-
-### Propose a feature:
-
-Instead of creating an issue here, please create a pull request with your change proposal in the [Homebrew Evolution](https://github.com/Homebrew/brew-evolution) repository using the [proposal template](https://github.com/Homebrew/brew-evolution/blob/master/proposal_template.md).
+We will close this issue or ask you to create a pull-request if it's something we're not actively planning to work on.

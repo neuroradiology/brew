@@ -12,8 +12,8 @@
 #:    `--include-build`. Similarly, pass `--include-optional` to include `:optional`
 #:    dependencies. To skip `:recommended` type dependencies, pass `--skip-recommended`.
 #:
-#:    By default, `uses` shows usages of `formula` by stable builds. To find
-#:    cases where `formula` is used by development or HEAD build, pass
+#:    By default, `uses` shows usages of <formulae> by stable builds. To find
+#:    cases where <formulae> is used by development or HEAD build, pass
 #:    `--devel` or `--HEAD`.
 
 require "formula"
@@ -23,10 +23,21 @@ require "formula"
 # The intersection is harder to achieve with shell tools.
 
 module Homebrew
+  module_function
+
   def uses
     raise FormulaUnspecifiedError if ARGV.named.empty?
 
-    used_formulae = ARGV.formulae
+    used_formulae_missing = false
+    used_formulae = begin
+      ARGV.formulae
+    rescue FormulaUnavailableError => e
+      opoo e
+      used_formulae_missing = true
+      # If the formula doesn't exist: fake the needed formula object name.
+      ARGV.named.map { |name| OpenStruct.new name: name, full_name: name }
+    end
+
     formulae = ARGV.include?("--installed") ? Formula.installed : Formula
     recursive = ARGV.flag? "--recursive"
     includes = []
@@ -55,22 +66,43 @@ module Homebrew
               elsif dep.build?
                 Dependency.prune unless includes.include?("build?")
               end
-            end
-            reqs = f.recursive_requirements do |dependent, req|
-              if req.recommended?
-                Requirement.prune if ignores.include?("recommended?") || dependent.build.without?(req)
-              elsif req.optional?
-                Requirement.prune if !includes.include?("optional?") && !dependent.build.with?(req)
-              elsif req.build?
-                Requirement.prune unless includes.include?("build?")
+
+              # If a tap isn't installed, we can't find the dependencies of one
+              # its formulae, and an exception will be thrown if we try.
+              if dep.is_a?(TapDependency) && !dep.tap.installed?
+                Dependency.keep_but_prune_recursive_deps
               end
             end
+
+            dep_formulae = deps.flat_map do |dep|
+              begin
+                dep.to_formula
+              rescue
+                []
+              end
+            end
+
+            reqs_by_formula = ([f] + dep_formulae).flat_map do |formula|
+              formula.requirements.map { |req| [formula, req] }
+            end
+
+            reqs_by_formula.reject! do |dependent, req|
+              if req.recommended?
+                ignores.include?("recommended?") || dependent.build.without?(req)
+              elsif req.optional?
+                !includes.include?("optional?") && !dependent.build.with?(req)
+              elsif req.build?
+                !includes.include?("build?")
+              end
+            end
+
+            reqs = reqs_by_formula.map(&:last)
           else
             deps = f.deps.reject do |dep|
-              ignores.any? { |ignore| dep.send(ignore) } && !includes.any? { |include| dep.send(include) }
+              ignores.any? { |ignore| dep.send(ignore) } && includes.none? { |include| dep.send(include) }
             end
             reqs = f.requirements.reject do |req|
-              ignores.any? { |ignore| req.send(ignore) } && !includes.any? { |include| req.send(include) }
+              ignores.any? { |ignore| req.send(ignore) } && includes.none? { |include| req.send(include) }
             end
           end
           next true if deps.any? do |dep|
@@ -81,16 +113,17 @@ module Homebrew
             end
           end
 
-          reqs.any? do |req|
-            req.name == ff.name || [ff.name, ff.full_name].include?(req.default_formula)
-          end
+          reqs.any? { |req| req.name == ff.name }
         rescue FormulaUnavailableError
           # Silently ignore this case as we don't care about things used in
           # taps that aren't currently tapped.
+          next
         end
       end
     end
 
-    puts_columns uses.map(&:full_name)
+    return if uses.empty?
+    puts Formatter.columns(uses.map(&:full_name).sort)
+    odie "Missing formulae should not have dependents!" if used_formulae_missing
   end
 end

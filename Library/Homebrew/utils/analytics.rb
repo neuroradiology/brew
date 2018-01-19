@@ -3,6 +3,11 @@ require "erb"
 module Utils
   module Analytics
     class << self
+      def clear_anonymous_os_prefix_ci_cache
+        return unless instance_variable_defined?(:@anonymous_os_prefix_ci)
+        remove_instance_variable(:@anonymous_os_prefix_ci)
+      end
+
       def os_prefix_ci
         @anonymous_os_prefix_ci ||= begin
           os = OS_VERSION
@@ -35,7 +40,7 @@ module Utils
         end
 
         # Send analytics. Don't send or store any personally identifiable information.
-        # https://github.com/Homebrew/brew/blob/master/docs/Analytics.md
+        # https://docs.brew.sh/Analytics.html
         # https://developers.google.com/analytics/devguides/collection/protocol/v1/devguide
         # https://developers.google.com/analytics/devguides/collection/protocol/v1/parameters
         if ENV["HOMEBREW_ANALYTICS_DEBUG"]
@@ -61,20 +66,15 @@ module Utils
           ev: value)
       end
 
-      def report_exception(exception, options = {})
-        if exception.is_a?(BuildError) &&
-           exception.formula.tap && !exception.formula.tap.private?
-          report_event("BuildError", exception.formula.full_name)
+      def report_build_error(exception)
+        return unless exception.formula.tap
+        return unless exception.formula.tap.installed?
+        return if exception.formula.tap.private?
+        action = exception.formula.full_name
+        if (options = exception.options)
+          action = "#{action} #{options}".strip
         end
-
-        fatal = options.fetch(:fatal, true) ? "1" : "0"
-        report(:exception,
-          exd: exception.class.name,
-          exf: fatal)
-      end
-
-      def report_screenview(screen_name)
-        report(:screenview, cd: screen_name)
+        report_event("BuildError", action)
       end
     end
   end

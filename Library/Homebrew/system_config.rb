@@ -6,20 +6,36 @@ require "development_tools"
 
 class SystemConfig
   class << self
-    def gcc_42
-      @gcc_42 ||= DevelopmentTools.gcc_42_build_version if DevelopmentTools.installed?
+    def gcc_4_2
+      @gcc_4_2 ||= if DevelopmentTools.installed?
+        DevelopmentTools.gcc_4_2_build_version
+      else
+        Version::NULL
+      end
     end
 
-    def gcc_40
-      @gcc_40 ||= DevelopmentTools.gcc_40_build_version if DevelopmentTools.installed?
+    def gcc_4_0
+      @gcc_4_0 ||= if DevelopmentTools.installed?
+        DevelopmentTools.gcc_4_0_build_version
+      else
+        Version::NULL
+      end
     end
 
     def clang
-      @clang ||= DevelopmentTools.clang_version if DevelopmentTools.installed?
+      @clang ||= if DevelopmentTools.installed?
+        DevelopmentTools.clang_version
+      else
+        Version::NULL
+      end
     end
 
     def clang_build
-      @clang_build ||= DevelopmentTools.clang_build_version if DevelopmentTools.installed?
+      @clang_build ||= if DevelopmentTools.installed?
+        DevelopmentTools.clang_build_version
+      else
+        Version::NULL
+      end
     end
 
     def head
@@ -57,11 +73,18 @@ class SystemConfig
     end
 
     def describe_perl
-      describe_path(which("perl"))
+      describe_path(which("perl", ENV["HOMEBREW_PATH"]))
     end
 
     def describe_python
-      python = which "python"
+      python = begin
+        python_path = PATH.new(ENV["HOMEBREW_PATH"])
+                          .prepend(Formula["python"].opt_libexec/"bin")
+        which "python", python_path
+      rescue FormulaUnavailableError
+        which "python"
+      end
+
       return "N/A" if python.nil?
       python_binary = Utils.popen_read python, "-c", "import sys; sys.stdout.write(sys.executable)"
       python_binary = Pathname.new(python_binary).realpath
@@ -73,7 +96,7 @@ class SystemConfig
     end
 
     def describe_ruby
-      ruby = which "ruby"
+      ruby = which "ruby", ENV["HOMEBREW_PATH"]
       return "N/A" if ruby.nil?
       ruby_binary = Utils.popen_read ruby, "-rrbconfig", "-e", \
         'include RbConfig;print"#{CONFIG["bindir"]}/#{CONFIG["ruby_install_name"]}#{CONFIG["EXEEXT"]}"'
@@ -111,8 +134,8 @@ class SystemConfig
       # java_home doesn't exist on all macOSs; it might be missing on older versions.
       return "N/A" unless File.executable? "/usr/libexec/java_home"
 
-      java_xml = Utils.popen_read("/usr/libexec/java_home", "--xml", "--failfast")
-      return "N/A" unless $?.success?
+      java_xml = Utils.popen_read("/usr/libexec/java_home", "--xml", "--failfast", err: :close)
+      return "N/A" unless $CHILD_STATUS.success?
       javas = []
       REXML::XPath.each(REXML::Document.new(java_xml), "//key[text()='JVMVersion']/following-sibling::string") do |item|
         javas << item.text
@@ -123,6 +146,15 @@ class SystemConfig
     def describe_git
       return "N/A" unless Utils.git_available?
       "#{Utils.git_version} => #{Utils.git_path}"
+    end
+
+    def describe_curl
+      curl_version_output = Utils.popen_read("#{curl_executable} --version", err: :close)
+      curl_version_output =~ /^curl ([\d\.]+)/
+      curl_version = Regexp.last_match(1)
+      "#{curl_version} => #{curl_executable}"
+    rescue
+      "N/A"
     end
 
     def dump_verbose_config(f = $stdout)
@@ -137,22 +169,62 @@ class SystemConfig
       else
         f.puts "Core tap: N/A"
       end
+      defaults_hash = {
+        HOMEBREW_PREFIX: "/usr/local",
+        HOMEBREW_REPOSITORY: "/usr/local/Homebrew",
+        HOMEBREW_CELLAR: "/usr/local/Cellar",
+        HOMEBREW_CACHE: "#{ENV["HOME"]}/Library/Caches/Homebrew",
+      }.freeze
+      boring_keys = %w[
+        HOMEBREW_BROWSER
+        HOMEBREW_EDITOR
+
+        HOMEBREW_ANALYTICS_ID
+        HOMEBREW_ANALYTICS_USER_UUID
+        HOMEBREW_AUTO_UPDATE_CHECKED
+        HOMEBREW_BREW_FILE
+        HOMEBREW_COMMAND_DEPTH
+        HOMEBREW_CURL
+        HOMEBREW_GIT_CONFIG_FILE
+        HOMEBREW_LIBRARY
+        HOMEBREW_MACOS_VERSION
+        HOMEBREW_RUBY_PATH
+        HOMEBREW_SYSTEM
+        HOMEBREW_OS_VERSION
+        HOMEBREW_PATH
+        HOMEBREW_PROCESSOR
+        HOMEBREW_PRODUCT
+        HOMEBREW_USER_AGENT
+        HOMEBREW_USER_AGENT_CURL
+        HOMEBREW_VERSION
+      ].freeze
       f.puts "HOMEBREW_PREFIX: #{HOMEBREW_PREFIX}"
-      f.puts "HOMEBREW_REPOSITORY: #{HOMEBREW_REPOSITORY}"
-      f.puts "HOMEBREW_CELLAR: #{HOMEBREW_CELLAR}"
-      f.puts "HOMEBREW_BOTTLE_DOMAIN: #{BottleSpecification::DEFAULT_DOMAIN}"
+      if defaults_hash[:HOMEBREW_REPOSITORY] != HOMEBREW_REPOSITORY.to_s
+        f.puts "HOMEBREW_REPOSITORY: #{HOMEBREW_REPOSITORY}"
+      end
+      if defaults_hash[:HOMEBREW_CELLAR] != HOMEBREW_CELLAR.to_s
+        f.puts "HOMEBREW_CELLAR: #{HOMEBREW_CELLAR}"
+      end
+      ENV.sort.each do |key, value|
+        next unless key.start_with?("HOMEBREW_")
+        next if boring_keys.include?(key)
+        next if defaults_hash[key.to_sym] == value
+        value = "set" if key =~ /(cookie|key|token|password)/i
+        f.puts "#{key}: #{value}"
+      end
       f.puts hardware if hardware
       f.puts "Homebrew Ruby: #{describe_homebrew_ruby}"
-      f.puts "GCC-4.0: build #{gcc_40}" if gcc_40
-      f.puts "GCC-4.2: build #{gcc_42}" if gcc_42
-      f.puts "Clang: #{clang ? "#{clang} build #{clang_build}" : "N/A"}"
+      f.puts "GCC-4.0: build #{gcc_4_0}" unless gcc_4_0.null?
+      f.puts "GCC-4.2: build #{gcc_4_2}" unless gcc_4_2.null?
+      f.puts "Clang: #{clang.null? ? "N/A" : "#{clang} build #{clang_build}"}"
       f.puts "Git: #{describe_git}"
+      f.puts "Curl: #{describe_curl}"
       f.puts "Perl: #{describe_perl}"
       f.puts "Python: #{describe_python}"
       f.puts "Ruby: #{describe_ruby}"
       f.puts "Java: #{describe_java}"
     end
-    alias_method :dump_generic_verbose_config, :dump_verbose_config
+    alias dump_generic_verbose_config dump_verbose_config
   end
 end
 

@@ -23,7 +23,7 @@ module Language
         else
           homebrew_site_packages(version)
         end
-        block.call python, version if block
+        block&.call python, version
       end
       ENV["PYTHONPATH"] = original_pythonpath
     end
@@ -35,7 +35,7 @@ module Language
       probe_file = homebrew_site_packages(version)/"homebrew-pth-probe.pth"
       begin
         probe_file.atomic_write("import site; site.homebrew_was_here = True")
-        quiet_system python, "-c", "import site; assert(site.homebrew_was_here)"
+        with_homebrew_path { quiet_system python, "-c", "import site; assert(site.homebrew_was_here)" }
       ensure
         probe_file.unlink if probe_file.exist?
       end
@@ -46,38 +46,15 @@ module Language
     end
 
     def self.in_sys_path?(python, path)
-      script = <<-EOS.undent
+      script = <<~EOS
         import os, sys
         [os.path.realpath(p) for p in sys.path].index(os.path.realpath("#{path}"))
       EOS
       quiet_system python, "-c", script
     end
 
-    # deprecated; use system "python", *setup_install_args(prefix) instead
-    def self.setup_install(python, prefix, *args)
-      opoo <<-EOS.undent
-        Language::Python.setup_install is deprecated.
-        If you are a formula author, please use
-          system "python", *Language::Python.setup_install_args(prefix)
-        instead.
-      EOS
-
-      # force-import setuptools, which monkey-patches distutils, to make
-      # sure that we always call a setuptools setup.py. trick borrowed from pip:
-      # https://github.com/pypa/pip/blob/043af83/pip/req/req_install.py#L743-L780
-      shim = <<-EOS.undent
-        import setuptools, tokenize
-        __file__ = 'setup.py'
-        exec(compile(getattr(tokenize, 'open', open)(__file__).read()
-          .replace('\\r\\n', '\\n'), __file__, 'exec'))
-      EOS
-      args += %w[--single-version-externally-managed --record=installed.txt]
-      args << "--prefix=#{prefix}"
-      system python, "-c", shim, "install", *args
-    end
-
     def self.setup_install_args(prefix)
-      shim = <<-EOS.undent
+      shim = <<~EOS
         import setuptools, tokenize
         __file__ = 'setup.py'
         exec(compile(getattr(tokenize, 'open', open)(__file__).read()
@@ -92,10 +69,6 @@ module Language
         --single-version-externally-managed
         --record=installed.txt
       ]
-    end
-
-    def self.package_available?(python, module_name)
-      quiet_system python, "-c", "import #{module_name}"
     end
 
     # Mixin module for {Formula} adding virtualenv support features.
@@ -139,11 +112,33 @@ module Language
         venv
       end
 
+      # Returns true if a formula option for the specified python is currently
+      # active or if the specified python is required by the formula. Valid
+      # inputs are "python", "python3", :python, and :python3. Note that
+      # "with-python", "without-python", "with-python3", and "without-python3"
+      # formula options are handled correctly even if not associated with any
+      # corresponding depends_on statement.
+      # @api private
+      def needs_python?(python)
+        return true if build.with?(python)
+        (requirements.to_a | deps).any? { |r| r.name == python && r.required? }
+      end
+
       # Helper method for the common case of installing a Python application.
       # Creates a virtualenv in `libexec`, installs all `resource`s defined
-      # on the formula, and then installs the formula.
-      def virtualenv_install_with_resources
-        venv = virtualenv_create(libexec)
+      # on the formula, and then installs the formula. An options hash may be
+      # passed (e.g., :using => "python3") to override the default, guessed
+      # formula preference for python or python3, or to resolve an ambiguous
+      # case where it's not clear whether python or python3 should be the
+      # default guess.
+      def virtualenv_install_with_resources(options = {})
+        python = options[:using]
+        if python.nil?
+          wanted = %w[python python@2 python@3 python3].select { |py| needs_python?(py) }
+          raise FormulaAmbiguousPythonError, self if wanted.size > 1
+          python = wanted.first || "python2.7"
+        end
+        venv = virtualenv_create(libexec, python.delete("@"))
         venv.pip_install resources
         venv.pip_install_and_link buildpath
         venv
@@ -193,6 +188,13 @@ module Language
             f.unlink
             f.make_symlink new_target
           end
+
+          Pathname.glob(@venv_root/"lib/python*/orig-prefix.txt").each do |prefix_file|
+            prefix_path = prefix_file.read
+            python = prefix_path.include?("python3") ? "python3" : "python"
+            prefix_path.sub! %r{^#{HOMEBREW_CELLAR}/#{python}/[^/]+}, Formula[python].opt_prefix
+            prefix_file.atomic_write prefix_path
+          end
         end
 
         # Installs packages represented by `targets` into the virtualenv.
@@ -239,7 +241,7 @@ module Language
                           "-v", "--no-deps", "--no-binary", ":all:",
                           "--ignore-installed", *targets
         end
-      end # class Virtualenv
-    end # module Virtualenv
-  end # module Python
-end # module Language
+      end
+    end
+  end
+end

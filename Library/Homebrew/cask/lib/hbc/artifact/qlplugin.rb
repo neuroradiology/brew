@@ -1,21 +1,27 @@
 require "hbc/artifact/moved"
 
-class Hbc::Artifact::Qlplugin < Hbc::Artifact::Moved
-  def self.artifact_english_name
-    "QuickLook Plugin"
-  end
+module Hbc
+  module Artifact
+    class Qlplugin < Moved
+      def self.english_name
+        "QuickLook Plugin"
+      end
 
-  def install_phase
-    super
-    reload_quicklook
-  end
+      def install_phase(**options)
+        super(**options)
+        reload_quicklook(**options)
+      end
 
-  def uninstall_phase
-    super
-    reload_quicklook
-  end
+      def uninstall_phase(**options)
+        super(**options)
+        reload_quicklook(**options)
+      end
 
-  def reload_quicklook
-    @command.run!("/usr/bin/qlmanage", args: ["-r"])
+      private
+
+      def reload_quicklook(command: nil, **_)
+        command.run!("/usr/bin/qlmanage", args: ["-r"])
+      end
+    end
   end
 end

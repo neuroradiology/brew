@@ -2,7 +2,7 @@
 #:    Upload logs for a failed build of <formula> to a new Gist.
 #:
 #:    <formula> is usually the name of the formula to install, but it can be specified
-#:    in several different ways. See [SPECIFYING FORMULAE][].
+#:    in several different ways. See [SPECIFYING FORMULAE](#specifying-formulae).
 #:
 #:    If `--new-issue` is passed, automatically create a new issue in the appropriate
 #:    GitHub repository as well as creating the Gist.
@@ -15,6 +15,8 @@ require "stringio"
 require "socket"
 
 module Homebrew
+  module_function
+
   def gistify_logs(f)
     files = load_logs(f.logs)
     build_time = f.logs.ctime
@@ -25,9 +27,9 @@ module Homebrew
     # Dummy summary file, asciibetically first, to control display title of gist
     files["# #{f.name} - #{timestamp}.txt"] = { content: brief_build_info(f) }
     files["00.config.out"] = { content: s.string }
-    files["00.doctor.out"] = { content: `brew doctor 2>&1` }
+    files["00.doctor.out"] = { content: Utils.popen_read("#{HOMEBREW_PREFIX}/bin/brew", "doctor", err: :out) }
     unless f.core_formula?
-      tap = <<-EOS.undent
+      tap = <<~EOS
         Formula: #{f.name}
         Tap: #{f.tap}
         Path: #{f.path}
@@ -45,13 +47,16 @@ module Homebrew
 
     if ARGV.include?("--new-issue") || ARGV.switch?("n")
       if GitHub.api_credentials_type == :none
-        puts "You can create a personal access token: https://github.com/settings/tokens"
-        puts "and then set HOMEBREW_GITHUB_API_TOKEN as authentication method."
-        puts
+        puts <<~EOS
+          You can create a new personal access token:
+           #{GitHub::ALL_SCOPES_URL}
+          and then set the new HOMEBREW_GITHUB_API_TOKEN as the authentication method.
+
+        EOS
         login!
       end
 
-      url = new_issue(f.tap, "#{f.name} failed to build on #{MacOS.full_version}", url)
+      url = create_issue(f.tap, "#{f.name} failed to build on #{MacOS.full_version}", url)
     end
 
     puts url if url
@@ -59,7 +64,7 @@ module Homebrew
 
   def brief_build_info(f)
     build_time_str = f.logs.ctime.strftime("%Y-%m-%d %H:%M:%S")
-    s = <<-EOS.undent
+    s = <<~EOS
       Homebrew build logs for #{f.full_name} on #{OS_VERSION}
     EOS
     if ARGV.include?("--with-hostname")
@@ -89,25 +94,31 @@ module Homebrew
 
   def load_logs(dir)
     logs = {}
-    dir.children.sort.each do |file|
-      contents = file.size? ? file.read : "empty log"
-      # small enough to avoid GitHub "unicorn" page-load-timeout errors
-      max_file_size = 1_000_000
-      contents = truncate_text_to_approximate_size(contents, max_file_size, front_weight: 0.2)
-      logs[file.basename.to_s] = { content: contents }
-    end if dir.exist?
+    if dir.exist?
+      dir.children.sort.each do |file|
+        contents = file.size? ? file.read : "empty log"
+        # small enough to avoid GitHub "unicorn" page-load-timeout errors
+        max_file_size = 1_000_000
+        contents = truncate_text_to_approximate_size(contents, max_file_size, front_weight: 0.2)
+        logs[file.basename.to_s] = { content: contents }
+      end
+    end
     raise "No logs." if logs.empty?
     logs
   end
 
   def create_gist(files, description)
+    url = "https://api.github.com/gists"
     data = { "public" => true, "files" => files, "description" => description }
-    GitHub.open("https://api.github.com/gists", data)["html_url"]
+    scopes = GitHub::CREATE_GIST_SCOPES
+    GitHub.open(url, data: data, scopes: scopes)["html_url"]
   end
 
-  def new_issue(repo, title, body)
+  def create_issue(repo, title, body)
+    url = "https://api.github.com/repos/#{repo}/issues"
     data = { "title" => title, "body" => body }
-    GitHub.open("https://api.github.com/repos/#{repo}/issues", data)["html_url"]
+    scopes = GitHub::CREATE_ISSUE_SCOPES
+    GitHub.open(url, data: data, scopes: scopes)["html_url"]
   end
 
   def gist_logs

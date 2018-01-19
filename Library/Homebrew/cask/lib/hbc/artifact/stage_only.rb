@@ -1,15 +1,23 @@
-require "hbc/artifact/base"
+require "hbc/artifact/abstract_artifact"
 
-class Hbc::Artifact::StageOnly < Hbc::Artifact::Base
-  def self.artifact_dsl_key
-    :stage_only
-  end
+module Hbc
+  module Artifact
+    class StageOnly < AbstractArtifact
+      def self.from_args(cask, *args)
+        if args != [true]
+          raise CaskInvalidError.new(cask.token, "'stage_only' takes only a single argument: true")
+        end
 
-  def install_phase
-    # do nothing
-  end
+        new(cask)
+      end
 
-  def uninstall_phase
-    # do nothing
+      def initialize(cask)
+        super(cask)
+      end
+
+      def to_a
+        [true]
+      end
+    end
   end
 end
